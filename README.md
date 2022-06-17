@@ -1,2 +1,44 @@
-# PSIX
-Powershell: Systems Integrity eXplorer
+PSIX (Powershell: Systems Integrity eXplorer)
+Repository: https://github.com/Nisetie/PSIX
+Development started: Nov 2019
+Inspired By Zabbix and Mamashev-Man.
+
+This tool implements tasks of retreiving information about defined metrics and criterias. Then using them to check system(-s) states and stability.
+User can make hosts, templates, template groups and LLDs like in Zabbix.
+PSIX is not a full alternative of Zabbix. But can be useful, when you want to collect metrics with difficult evaluations.
+PSIX support additional plugins. Which can process an information of host's metrics after his update and do something else with it. For examplse, send metrics to Zabbix.
+
+Notes:
+1. In current version works stable with hosts in domain. Doesn't tested with hosts without AD and DNS.
+2. ...
+
+Short instruction:
+1.Fill Hosts directory.
+
+Example:
+Hosts\
+	<HostName>\
+		[templates.txt]
+		Updates\
+		Triggers\
+		LLDs\
+
+2.Fill Templates directory.
+
+Example:
+Templates\
+	TemplateName>\
+		Updates\
+		Triggers\
+		LLDs\
+
+3.Fill HostGroups.
+
+Example:
+HostGroups\
+	<GroupName>\
+		templates.txt
+		hosts.txt
+
+- PROFIT
+
