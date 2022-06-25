@@ -1,9 +1,13 @@
-﻿Enum ConnectionType { NONE;IP;DNS }
+Enum ConnectionType { NONE;IP;DNS }
 
 enum GeneratorBlock { EMPTY;TEMPLATE;DEFINE;INIT;UPDATE;GENERATOR }
 
+enum ObjectType {HOST; TEMPLATE}
+enum Invokation {REMOTE; LOCAL}
+
 class MetaModel
 {
+    [ObjectType]$objectType;
     [string]$className;
     [System.Collections.Generic.Dictionary[string,int]]$variables;
     [System.Collections.Generic.List[string]]$Templates;
@@ -26,8 +30,9 @@ class LLDInfo
     [scriptblock]$generator;
     [System.Collections.Generic.Dictionary[string,string]]$defines;
     [System.Collections.Generic.Dictionary[string,string]]$inits;
-    [System.Collections.Generic.Dictionary[string,System.Array]]$updates;
+    [System.Collections.Generic.Dictionary[string,string]]$updates;
     [System.Collections.Generic.Dictionary[string,System.Array]]$triggers;
+    [Invokation] $invokation;
 
     LLDInfo()
     {
@@ -76,7 +81,7 @@ class <className> : TemplateBase {
 
         $temp = "";
 
-        $templateName = $this.hostName + '_' + $this.className;
+        $templateName = $this.className;
 
         $variables = New-Object 'System.Collections.Generic.Dictionary[string,int]';
         
@@ -92,7 +97,7 @@ class <className> : TemplateBase {
                 $temp = $temp.Replace('<templateName>', $templateName);
                 $temp = $temp.Replace('<elementName>', $metricAlias + '_' + $key);
                 $variables.Add($metricAlias + '_' + $key, $variables.Count);
-                $temp = $temp.Replace('<updateScript>',$this.updates[$key][0].ToString().Replace("`$metric",$metricName));
+                $temp = $temp.Replace('<updateScript>',$this.updates[$key].ToString().Replace("`$metric",'"'+$metricName+'"'));
                 $initBody += $temp;
             }
         }
@@ -110,6 +115,7 @@ class <className> : TemplateBase {
                 $someScript = $this.triggers[$key][0].ToString();                
                 $s = ($someScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | select value;
                 foreach ($el in $s) { $el = $el.Value; $someScript = ($someScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $variables[$metricAlias +'_' + $el.Replace("`$this.","")] + "].CurrentValue"));  }   
+
                 $temp = $temp.Replace('<checkScript>', $someScript);
 
                 $temp = $temp.Replace('<templateName>', $templateName);
@@ -119,6 +125,7 @@ class <className> : TemplateBase {
                 $someScript = $this.triggers[$key][1].ToString();                
                 $s = ($someScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | select value;
                 foreach ($el in $s) { $el = $el.Value; $someScript = ($someScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $variables[$metricAlias +'_' + $el.Replace("`$this.","")] + "].CurrentValue"));  }   
+
                 $temp = $temp.Replace('<descriptionScript>', $someScript);
 
                 $initBody += $temp;
@@ -132,7 +139,7 @@ class <className> : TemplateBase {
         $result = $result.Replace('<triggerBody>', $triggerBody); 
         
         Invoke-Expression $result;
-        return New-Object -TypeName ($this.hostName + '_' + $this.className) -ArgumentList ($this.hostRef);
+        return New-Object -TypeName ($this.className) -ArgumentList ($this.hostRef);
     }
 }
 
@@ -221,8 +228,13 @@ class HostBase
             #LLD
             for ([int]$i = 0; $i -lt $this.LLDs.Count; ++$i)  {
                 $lld = $this.LLDs[$i];
-                $metrics = Invoke-Command -ComputerName ($this.hostName) -scriptblock  $lld.Generator;
-                $this.templates.Add($lld.GenerateByMetrics($metrics));
+                if ($lld.invokation -eq [Invokation]::REMOTE) {
+                    $this.templates.Add($lld.GenerateByMetrics((Invoke-Command -ComputerName ($this.hostName) -scriptblock  $lld.Generator)));
+                }
+                elseif ($lld.invokation -eq [Invokation]::LOCAL) {
+                    $this.templates.Add($lld.GenerateByMetrics(([scriptblock]::Create($lld.Generator).InvokeReturnAsIs($this))));
+                }
+                
             }
         }
 
@@ -473,6 +485,13 @@ function ParseUpdatesCatalog([MetaModel]$info,[string]$className,[string]$path) 
 function ParseTriggersCatalog([MetaModel]$info,[string]$path) {
     $triggers = Get-ChildItem -Path ($path) -Directory;
     $initBody = '';
+    $hostNameStr = '';
+    if ($info.objectType -eq [ObjectType]::TEMPLATE) {
+        $hostNameStr = '$($this.HostRef.HostName)';
+    }
+    elseif ($info.objectType -eq [ObjectType]::HOST) {
+        $hostNameStr = $info.className;
+    }
     for ($i = 0; $i -ne $triggers.Count; ++$i) {
         if ($triggers[$i].BaseName[0] -eq '#') {continue;}
 
@@ -492,7 +511,7 @@ function ParseTriggersCatalog([MetaModel]$info,[string]$path) {
         $initBody += @"
 `$triggerInfo = [TriggerInfo]::new();
 `$triggerInfo.Script = {$triggerScript};
-`$triggerInfo.Host = '$($info.ClassName)';
+`$triggerInfo.Host = "$hostNameStr";
 `$triggerInfo.Template = `$this.TemplateName;
 `$triggerInfo.Item = '$triggerItemName';
 `$triggerInfo.DescriptionScript = {return `"$triggerDescription`"};
@@ -514,6 +533,7 @@ function ParseTemplateCatalog ([string] $path) {
     
     [MetaModel] $templateInfo = [MetaModel]::new();
     $templateInfo.className = $className;
+    $templateInfo.objectType = [objecttype]::TEMPLATE;
 
     $body = 
 "class <className> : TemplateBase {
@@ -567,6 +587,7 @@ function ParseHostCatalog ([string] $path) {
 
     [MetaModel] $hostInfo = [MetaModel]::new();
     $hostInfo.className = $className;
+    $hostInfo.objectType = [objecttype]::HOST;
 
     $body = 
 "class <className> : HostBase {
@@ -629,17 +650,29 @@ function ParseHostCatalog ([string] $path) {
 
 function ParseLLDCatalog ([string] $path) {
 
-    $body = "`$lld = [LLDInfo]::new();`n"
-    $body += "`$lld.hostRef = `$this`n";
-    $body += "`$lld.hostName = `"<hostName>`"`n";
+    $body = "`$lld = [LLDInfo]::new();`r`n"
+    $body += "`$lld.hostRef = `$this`r`n";
+    $body += "`$lld.hostName = `"<hostName>`"`r`n";
+    $body += "<invokation>`r`n";
     
-    [int]$updateIntervalDefault = 1;
-
+    <#
     if ((Test-Path -Path $path) -eq $false) {
         return [string[]]::new(0);
     }
+    #>
 
-    $className = (Get-Item -Path $path).Name;
+    $fileNameParts = (Get-Item -Path $path).Name.Split(' ');
+    $className = $fileNameParts[0];
+
+    $inv = [Invokation]::REMOTE;
+    if ($fileNameParts.Length -gt 1) {
+        if ($fileNameParts[1].ToLower() -eq 'local') {
+            $inv = [Invokation]::LOCAL;
+        }
+        elseif ($fileNameParts[1].ToLower() -eq 'remote') {
+            $inv = [Invokation]::REMOTE;
+        }
+    }
 
     $body += "`$lld.className = `"$Classname`"`n";
 
@@ -654,6 +687,8 @@ function ParseLLDCatalog ([string] $path) {
     $UpdateRows = [System.Collections.Generic.List[object]]::new();
 
     [LLDInfo] $lldInfo = [LLDInfo]::new();
+    $lldInfo.invokation = $inv;
+    $body = $body.Replace('<invokation>','$lld.invokation = [Invokation]::' + $inv.ToString());
 
     [GeneratorBlock]$block = [GeneratorBlock]::TEMPLATE;
 
@@ -673,12 +708,12 @@ function ParseLLDCatalog ([string] $path) {
                 if ($row -eq "" -or $row[0] -eq "#") { continue; }            
                 $varDetails = $row.Split(" ");                
                 #$lldBody.variables.Add(@{ Type =  $varDetails[0]; Name =  $varDetails[1] });                        
-                $body += "`$lld.defines.Add($($varDetails[1]),$($varDetails[0]))`n";
+                $body += "`$lld.defines.Add($($varDetails[1]),$($varDetails[0]))`r`n";
             }
         }
         elseif ($block -eq [GeneratorBlock]::GENERATOR) {
             #$lldInfo.generator = [scriptblock]::Create(Get-Content $file.FullName -Raw);
-            $body += "`$lld.generator = {$(Get-Content $file.FullName -Raw)}`n";
+            $body += "`$lld.generator = {$(Get-Content $file.FullName -Raw)}`r`n";
         }
     }
     if ([System.IO.Directory]::Exists($path + "\updates") -eq $true) {        
@@ -689,13 +724,15 @@ function ParseLLDCatalog ([string] $path) {
             $updateFileParts = $updateFile.BaseName.Split(" ");
             if ($defineBody -match ($updateFileParts[0] + "[^a-f\d]") -eq $false) { 
                 #$lldInfo.defines.Add("`"$updateFileParts[0]`"",'object');   
-                $body += "`$lld.defines.Add(`"$($updateFileParts[0])`",'object')`n";
+                $body += "`$lld.defines.Add(`"$($updateFileParts[0])`",'object')`r`n";
             }
-            $updateIntervalElement = $updateIntervalDefault;
-            if ($updateFileParts.Length -ge 2) {$updateIntervalElement = [int]::Parse($updateFileParts[1]);}
+            
+            if ($updateFileParts.Length -ge 2) {
+            #...for future
+            }
+
             $scriptText = (Get-Content -Path $updateFile.FullName -Raw);
-            #$lldInfo.updates.Add($updateFileParts[0], @($scriptText,$updateIntervalElement));
-            $body += "`$lld.updates.Add(`"$($updateFileParts[0])`",@({$scriptText},$updateIntervalElement));`n";
+            $body += "`$lld.updates.Add(`"$($updateFileParts[0])`",{$scriptText});`n";
         }
     }    
     if ([System.IO.Directory]::Exists($path + "\triggers") -eq $true) {        
@@ -708,12 +745,12 @@ function ParseLLDCatalog ([string] $path) {
             $triggerDescription = $triggerItemName + "!";
             if ((Test-Path -Path ($triggerCatalog.Fullname + "\message.txt")) -eq $true) {$triggerDescription = Get-Content -Path ($triggerCatalog.Fullname + "\message.txt") -Raw;}
             #$lldInfo.triggers.Add( $triggerItemName,$triggerScript);
-            $body += "`$lld.triggers.Add(`"$triggerItemName`",@({$triggerScript},`"$triggerDescription`"));`n";
+            $body += "`$lld.triggers.Add(`"$triggerItemName`",@({$triggerScript},`"$($triggerDescription.Replace('$','`$'))`"));`n";
         }
     }
 
-    $body += "`$this.llds.Add(`$lld);`n";        
-
+    $body += "`$this.llds.Add(`$lld);`r`n";        
+    
 
     $lldInfo.className = $className;
 
@@ -721,3 +758,5 @@ function ParseLLDCatalog ([string] $path) {
 
     return $lldInfo;
 }
+
+'abc'.Remove('abc'.Length-1)
