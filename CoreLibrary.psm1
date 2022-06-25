@@ -758,5 +758,3 @@ function ParseLLDCatalog ([string] $path) {
 
     return $lldInfo;
 }
-
-'abc'.Remove('abc'.Length-1)
