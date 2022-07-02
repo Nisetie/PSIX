@@ -13,6 +13,10 @@ PSIX is not a full alternative of Zabbix. But can be useful, when you want to co
 
 PSIX support additional plugins. Which can process an information of host's metrics after his update and do something else with it. For examplse, send metrics to Zabbix.
 
+System requirements For "server" machine:
+- Windows Management Framework 5.1 with PowerShell 5.1 (https://www.microsoft.com/en-us/download/details.aspx?id=54616) or later.
+  - For Windows 2012 R2: KB3191564
+
 Notes:
 1. In current version works stable with hosts in domain. Doesn't tested with hosts without AD and DNS.
 2. ...
