@@ -1,4 +1,4 @@
-param($groups=$null,$hosts=$null,$templates=$null)
+param($groups=$null,$hosts=$null,$templates=$null,$hostsIgnore=$null,$groupsIgnore=$null)
 
 import-module ($PSScriptRoot +  ".\CoreLibrary.psm1")
 
@@ -17,31 +17,46 @@ for ($i = 0; $i -lt $plugins.Count; ++$i) {
 write ("Groups: $groups")
 write ("Hosts: $hosts")
 write ("Templates: $templates")
+write ("Groups ignore: $groupsIgnore")
+write ("Hosts ignore: $hostsIgnore")
+write ("Templates ignore: $templatesIgnore")
+
 
 if ($groups -ne $null) { $groups = $groups.Split(","); }
-if ($hosts -ne $null) { $hosts = $hosts.Split(","); }
+if ($hosts -ne $null) { $hosts = New-Object 'System.Collections.Generic.List[string]' $hosts.Split(","); } else { $hosts = New-Object 'System.Collections.Generic.List[string]'; } 
 if ($templates -ne $null) { $templates = $templates.Split(","); }
+if ($groupsIgnore -ne $null) { $groupsIgnore = $groupsIgnore.Split(","); }
+if ($hostsIgnore -ne $null) { $hostsIgnore = $hostsIgnore.Split(","); }
 
-
-if ($hosts -ne $null) {
-    $hostsFiles = Get-ChildItem -Path ("$PSScriptRoot\RuntimeHosts") | where { $_.BaseName -in $hosts }
-} else {
-    $hostsFiles = Get-ChildItem -Path ("$PSScriptRoot\RuntimeHosts")
-}
-
-if ($hosts -eq $null -and $groups -ne $null) {
+if ($groups -ne $null) {
     $hostsInGroups = New-Object 'System.Collections.Generic.List[string]';
     foreach ($group in $groups) {
         $hostsInGroup = Get-Content ("$PSScriptRoot\HostGroups\$group\hosts.txt");
         foreach ($hostInGroup in $hostsInGroup) {
-            if ($hostsInGroups.Contains($hostInGroup) -eq $false) { 
-                $hostsInGroups.Add($_); 
-            }
+            $hostsInGroups.Add($hostInGroup);   
         }
     }
-        
-    #$hostsInGroups = New-Object 'System.Collections.Generic.List[string]' (,(New-Object System.Collections.Generic.HashSet[string] (,$hostsInGroups)))
+
+    $hosts.AddRange($hostsInGroups);
 }
+
+if ($groupsIgnore -ne $null) {
+    $hostsInGroups = New-Object 'System.Collections.Generic.List[string]';
+    foreach ($group in $groups) {
+        $hostsInGroup = Get-Content ("$PSScriptRoot\HostGroups\$group\hosts.txt");
+        foreach ($hostInGroup in $hostsInGroup) {
+            [void] $hosts.RemoveAll( { param($match) $match -eq $hostsInGroup } );
+        }
+    }
+}
+
+if ($hostsIgnore -ne $null) {
+    foreach ($hostIgnore in $hostsIgnore) {
+        [void] $hosts.RemoveAll( { param($match) $match -eq $hostIgnore } );
+    }
+}
+
+$hostsFiles = Get-ChildItem -Path ("$PSScriptRoot\RuntimeHosts") | where { $_.BaseName -in $hosts }
 
 $RunspacePool = [runspacefactory]::CreateRunspacePool(1,1000)
 $RunspacePool.Open()
@@ -93,7 +108,7 @@ for ($i = 0; $i -lt $hostsFiles.Count; ++$i) {
 }
 
 
-write ('[' + (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffffff") + '] ' + "Сканирование началось.");
+write ('[' + (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffffff") + '] ' + "РЎРєР°РЅРёСЂРѕРІР°РЅРёРµ РЅР°С‡Р°Р»РѕСЃСЊ.");
 
 for ($i = 0; $i -lt $Runspaces.Count; ++$i) { 
 	$iaResult = $Runspaces[$i].Instance.BeginInvoke(); 
@@ -122,11 +137,8 @@ for ($i = 0; $i -lt $Runspaces.Count; ++$i) {
         Write-Output $data; 
     }
 }
-    
-[System.GC]::Collect();  
-[System.GC]::GetTotalMemory($true) | out-null
 
-write ('[' + (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffffff") + '] ' + "Завершено." );
+write ('[' + (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffffff") + '] ' + "Р—Р°РІРµСЂС€РµРЅРѕ." );
 
 $RunspacePool.Close();
 $RunspacePool.Dispose();
