@@ -97,7 +97,7 @@ class <className> : TemplateBase {
                 $temp = $temp.Replace('<templateName>', $templateName);
                 $temp = $temp.Replace('<elementName>', $metricAlias + '_' + $key);
                 $variables.Add($metricAlias + '_' + $key, $variables.Count);
-                $temp = $temp.Replace('<updateScript>',$this.updates[$key].ToString().Replace("`$metric",'"'+$metricName+'"'));
+                $temp = $temp.Replace('<updateScript>',$this.updates[$key].ToString().Replace('$metric',"'"+$metricName.Replace('''','''''')+"'"));
                 $initBody += $temp;
             }
         }
@@ -138,6 +138,7 @@ class <className> : TemplateBase {
         $result = $result.Replace('<updateBody>', $updateBody); 
         $result = $result.Replace('<triggerBody>', $triggerBody); 
         
+        #return $result;
         Invoke-Expression $result;
         return New-Object -TypeName ($this.className) -ArgumentList ($this.hostRef);
     }
