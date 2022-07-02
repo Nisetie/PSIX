@@ -1,5 +1,4 @@
 param($groups=$null,$hosts=$null,$templates=$null,$hostsIgnore=$null,$groupsIgnore=$null)
-
 import-module ($PSScriptRoot +  ".\CoreLibrary.psm1")
 
 # LOADING PLUGINS
@@ -23,7 +22,7 @@ write ("Templates ignore: $templatesIgnore")
 
 
 if ($groups -ne $null) { $groups = $groups.Split(","); }
-if ($hosts -ne $null) { $hosts = New-Object 'System.Collections.Generic.List[string]' $hosts.Split(","); } else { $hosts = New-Object 'System.Collections.Generic.List[string]'; } 
+if ($hosts -ne $null) { $hosts = New-Object 'System.Collections.Generic.List[string]' (,$hosts.Split(",")); } else { $hosts = New-Object 'System.Collections.Generic.List[string]'; } 
 if ($templates -ne $null) { $templates = $templates.Split(","); }
 if ($groupsIgnore -ne $null) { $groupsIgnore = $groupsIgnore.Split(","); }
 if ($hostsIgnore -ne $null) { $hostsIgnore = $hostsIgnore.Split(","); }
