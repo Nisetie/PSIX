@@ -1,4 +1,4 @@
-﻿# --- INCLUDE
+# --- INCLUDE
 using module .\CoreLibrary.psm1
 
 # --- INITIALIZATION
@@ -87,14 +87,6 @@ foreach ($hostGroupCatalog in $hostGroupCatalogs) {
 
     Write-Host ("Обработка группы хостов " + $hostGroupCatalog.ToString());
 
-    $hostsListFile = Get-ChildItem -Path $hostGroupCatalog -File -Filter "hosts.txt";
-    if ($hostsListFile.Count -eq 0) { continue; }
-    $hostsList = Get-Content -Path $hostsListFile.FullName;
-
-    $templatesListFile = Get-ChildItem -Path $hostGroupCatalog -File -Filter "templates.txt";
-    if ($templatesListFile.Count -eq 0) { continue; }
-    $templatesList = Get-Content -Path $templatesListFile.FullName;
-
     $llds = "";
     if (test-path "$($hostGroupCatalog.FullName)\LLDs") {
         $lldsDirs = Get-ChildItem -Path ("$($hostGroupCatalog.FullName)\LLDs") -Directory;
@@ -103,6 +95,14 @@ foreach ($hostGroupCatalog in $hostGroupCatalogs) {
             $llds += $lldBody;
         }
     }
+
+    $hostsListFile = Get-ChildItem -Path $hostGroupCatalog -File -Filter "hosts.txt";
+    if ($hostsListFile.Count -eq 0) { continue; }
+    $hostsList = Get-Content -Path $hostsListFile.FullName;
+
+    $templatesListFile = Get-ChildItem -Path $hostGroupCatalog -File -Filter "templates.txt";
+    if ($templatesListFile.Count -eq 0) { $templatesList = $null; }
+    else { $templatesList = Get-Content -Path $templatesListFile.FullName; }
 
     foreach ($hostName in $hostsList){    
         $hostName = $hostName.ToLower();
