@@ -1,4 +1,4 @@
-param($groups=$null,$hosts=$null,$templates=$null,$hostsIgnore=$null,$groupsIgnore=$null)
+param($groups=$null,$hosts=$null,$templates=$null,$hostsIgnore=$null,$groupsIgnore=$null,$templatesIgnore=$null)
 import-module ($PSScriptRoot +  ".\CoreLibrary.psm1")
 
 # LOADING PLUGINS
@@ -26,6 +26,7 @@ if ($hosts -ne $null) { $hosts = New-Object 'System.Collections.Generic.List[str
 if ($templates -ne $null) { $templates = $templates.Split(","); }
 if ($groupsIgnore -ne $null) { $groupsIgnore = $groupsIgnore.Split(","); }
 if ($hostsIgnore -ne $null) { $hostsIgnore = $hostsIgnore.Split(","); }
+if ($templatesIgnore -ne $null) { $templatesIgnore = $templatesIgnore.Split(","); }
 
 if ($groups -ne $null) {
     $hostsInGroups = New-Object 'System.Collections.Generic.List[string]';
@@ -55,9 +56,9 @@ if ($hostsIgnore -ne $null) {
     }
 }
 
-$hostsFiles = Get-ChildItem -Path ("$PSScriptRoot\RuntimeHosts") | where { $_.BaseName -in $hosts }
+$hostsFiles = Get-ChildItem -Path ("$PSScriptRoot\RuntimeHosts") | where { $hosts.Count -eq 0 -or $_.BaseName -in $hosts }
 
-$RunspacePool = [runspacefactory]::CreateRunspacePool(1,1000)
+$RunspacePool = [runspacefactory]::CreateRunspacePool(1,5)
 $RunspacePool.Open()
 
 $Runspaces = @();
@@ -68,14 +69,16 @@ $mainScript = {
         [string]$usingPath,
         [System.Collections.Generic.List[object]]$pluginsList,
         [string]$rootPath, #for plugins
-        [string[]]$tFilter #template filter
+        [object]$filters #template filter
     )
 
     $runScript =@"
 using module $usingPath        
-        
+
+param(`$filters)
+
 `$instance = new-object $hostName        
-`$instance.InitializeData(`$args[0]);        
+`$instance.InitializeData(`$filters.Include,`$filters.Exclude);        
 `$instance.Update();            
 `$instance.Check();            
 "@;
@@ -84,7 +87,7 @@ using module $usingPath
         $runScript += $pluginsList[$it].ToString() + [System.Environment]::NewLine; 
     }
 
-    [scriptblock]::Create($runScript).InvokeReturnAsIs((,$tFilter));
+    [scriptblock]::Create($runScript).InvokeReturnAsIs($filters);
 };
 
 for ($i = 0; $i -lt $hostsFiles.Count; ++$i) {
@@ -95,7 +98,7 @@ for ($i = 0; $i -lt $hostsFiles.Count; ++$i) {
     [void]$PSInstance.AddParameter('usingPath',$hostsFiles[$i].FullName)
     [void]$PSInstance.AddParameter('pluginsList',$plugins)
     [void]$PSInstance.AddParameter('rootPath',$PSScriptRoot);
-    [void]$PSInstance.AddParameter('tFilter',$templates);
+    [void]$PSInstance.AddParameter('filters',@{Include=$templates;Exclude=$templatesIgnore});
 
     $PSInstance.RunspacePool = $RunspacePool
 
