@@ -221,8 +221,8 @@ class HostBase
     }
 
     # Формирование скриптов для выполнения на стороне хоста
-    [void]InitializeData([string[]]$tFilter = $null) {    
-        
+    [void]InitializeData([string[]]$tFilter = $null,[string[]]$tiFilter = $null) {    
+         
         $this.us = [System.Collections.ArrayList]::new();
 
         if ($this.ping -ne $null) {
@@ -264,6 +264,23 @@ class HostBase
             
             }
         }
+        if ($tiFilter -ne $null) {
+            for ([int]$i = 0; $i -lt $this.templates.Count; ++$i)  {
+                $toRemove = $false;
+                foreach ($fTemplate in $tiFilter) {            
+                    if ($this.templates[$i].templateName -eq $fTemplate) {
+                        $toRemove = $true;
+                        break;
+                    }
+                }
+                if ($toRemove) {
+                    $this.templates.RemoveAt($i);
+                    $i--;
+                }
+            
+            }
+        }
+
 
         # Скрипты вложенных шаблонов
         for ([int]$i = 0; $i -lt $this.templates.Count; ++$i) {
@@ -733,7 +750,9 @@ function ParseLLDCatalog ([string] $path) {
             }
 
             $scriptText = (Get-Content -Path $updateFile.FullName -Raw);
-            $body += "`$lld.updates.Add(`"$($updateFileParts[0])`",{$scriptText});`n";
+            $body += "`$lld.updates.Add(`"$($updateFileParts[0])`",{
+$scriptText
+});`n";
         }
     }    
     if ([System.IO.Directory]::Exists($path + "\triggers") -eq $true) {        
