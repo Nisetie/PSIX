@@ -5,6 +5,7 @@ using module .\CoreLibrary.psm1
 
 cls;
 
+$initialLocation = Get-Location;
 Set-Location $PSScriptRoot;
 
 [bool]$DEBUG = $true;
@@ -191,3 +192,5 @@ foreach ($remoteHost in $hostCatalogs) {
         Body = $script.body;
     });
 }
+
+Set-Location $initialLocation;
