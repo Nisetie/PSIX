@@ -9,6 +9,7 @@ class MetaModel
 {
     [ObjectType]$objectType;
     [string]$className;
+    [object]$tag;
     [System.Collections.Generic.Dictionary[string,int]]$variables;
     [System.Collections.Generic.List[string]]$Templates;
     [System.Collections.Generic.List[LLDInfo]]$llds;
@@ -42,7 +43,7 @@ class LLDInfo
         $this.triggers = [System.Collections.Generic.Dictionary[string,object]]::new();
     }
 
-    [TemplateBase]GenerateByMetrics([object[]]$metrics)
+    [string]GenerateByMetrics([object[]]$metrics)
     {
         $result = @"
 class <className> : TemplateBase {
@@ -98,7 +99,7 @@ class <className> : TemplateBase {
                 $temp = $temp.Replace('<elementName>', $metricAlias + '_' + $key);
                 $variables.Add($metricAlias + '_' + $key, $variables.Count);
                 $temp = $temp.Replace('<updateScript>',$this.updates[$key].ToString().Replace('$metric',"'"+$metricName.Replace('''','''''')+"'"));
-                $initBody += $temp;
+                $initBody += $temp + [System.Environment]::NewLine;
             }
         }
 
@@ -114,7 +115,10 @@ class <className> : TemplateBase {
               
                 $someScript = $this.triggers[$key][0].ToString();                
                 $s = ($someScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | select value;
-                foreach ($el in $s) { $el = $el.Value; $someScript = ($someScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $variables[$metricAlias +'_' + $el.Replace("`$this.","")] + "].CurrentValue"));  }   
+                foreach ($el in $s) { 
+                    $el = $el.Value; 
+                    $someScript = ($someScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $variables[$metricAlias +'_' + $el.Replace("`$this.","")] + "].CurrentValue"));  
+                }   
 
                 $temp = $temp.Replace('<checkScript>', $someScript);
 
@@ -124,11 +128,14 @@ class <className> : TemplateBase {
 
                 $someScript = $this.triggers[$key][1].ToString();                
                 $s = ($someScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | select value;
-                foreach ($el in $s) { $el = $el.Value; $someScript = ($someScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $variables[$metricAlias +'_' + $el.Replace("`$this.","")] + "].CurrentValue"));  }   
+                foreach ($el in $s) {
+                    $el = $el.Value;
+                    $someScript = ($someScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $variables[$metricAlias +'_' + $el.Replace("`$this.","")] + "].CurrentValue")); 
+                }   
 
                 $temp = $temp.Replace('<descriptionScript>', $someScript);
 
-                $initBody += $temp;
+                $initBody += $temp + [System.Environment]::NewLine;
             }
         }       
 
@@ -138,8 +145,18 @@ class <className> : TemplateBase {
         $result = $result.Replace('<updateBody>', $updateBody); 
         $result = $result.Replace('<triggerBody>', $triggerBody); 
         
-        #return $result;
-        Invoke-Expression $result;
+        return $result;
+    }
+
+    [TemplateBase]GenerateType([scriptblock]$scr)
+    {
+        Invoke-Expression $scr;
+        return New-Object -TypeName ($this.className) -ArgumentList ($this.hostRef);
+    }
+
+    [TemplateBase]GenerateTypeByMetrics([object[]]$metrics)
+    {        
+        Invoke-Expression ($this.GenerateByMetrics($metrics));
         return New-Object -TypeName ($this.className) -ArgumentList ($this.hostRef);
     }
 }
@@ -228,6 +245,7 @@ class HostBase
         if ($this.ping -ne $null) {
             #LLD
             for ([int]$i = 0; $i -lt $this.LLDs.Count; ++$i)  {
+                break;
                 $lld = $this.LLDs[$i];
                 if ($lld.invokation -eq [Invokation]::REMOTE) {
                     $this.templates.Add($lld.GenerateByMetrics((Invoke-Command -ComputerName ($this.hostName) -scriptblock  $lld.Generator)));
@@ -251,12 +269,10 @@ class HostBase
         if ($tFilter -ne $null) {
             for ([int]$i = 0; $i -lt $this.templates.Count; ++$i)  {
                 $toRemove = $true;
-                foreach ($fTemplate in $tFilter) {            
-                    if ($this.templates[$i].templateName -eq $fTemplate) {
+                if ($tFilter -contains $this.templates[$i].templateName) {
                         $toRemove = $false;
-                        break;
-                    }
-                }
+                   }
+                
                 if ($toRemove) {
                     $this.templates.RemoveAt($i);
                     $i--;
@@ -267,12 +283,10 @@ class HostBase
         if ($tiFilter -ne $null) {
             for ([int]$i = 0; $i -lt $this.templates.Count; ++$i)  {
                 $toRemove = $false;
-                foreach ($fTemplate in $tiFilter) {            
-                    if ($this.templates[$i].templateName -eq $fTemplate) {
-                        $toRemove = $true;
-                        break;
-                    }
+                if ($tiFilter -contains $this.templates[$i].templateName) {
+                    $toRemove = $true;
                 }
+                
                 if ($toRemove) {
                     $this.templates.RemoveAt($i);
                     $i--;
@@ -607,8 +621,9 @@ function ParseHostCatalog ([string] $path) {
     $hostInfo.className = $className;
     $hostInfo.objectType = [objecttype]::HOST;
 
-    $body = 
-"class <className> : HostBase {
+    $body = "
+<additionalText>
+class <className> : HostBase {
     <defineBody>
 `t" + $className + "() : base('$className') {
         <initBody>
@@ -621,7 +636,7 @@ function ParseHostCatalog ([string] $path) {
         <updateBody>
     }
 }";
-
+    $additionalText = "";
     $templateBody = "";
     $defineBody = "";
     $initBody = "";
@@ -649,8 +664,21 @@ function ParseHostCatalog ([string] $path) {
     if ([System.IO.Directory]::Exists($path + "\llds") -eq $true) {        
         $llds = Get-ChildItem -Path ($path + "\llds") -Directory;
         foreach ($lld in $llds) {
+            if ($lld.Basename[0] -eq '#') { continue; }
+            
             $lldInfo = ParseLLDCatalog($path + "\llds\" + $lld.Name);
-            $initBody += $lldInfo.body.Replace("<hostName>",$className);
+            #$initBody += $lldInfo.body.Replace("<hostName>",$className);
+
+            $metrics = $null;
+            if ($lldInfo.invokation -eq [Invokation]::REMOTE) {                    
+                $metrics = Invoke-Command -ComputerName ($className) -scriptblock  $lldInfo.Generator;
+            }
+            elseif ($lldInfo.invokation -eq [Invokation]::LOCAL) {
+                $metrics = $lldInfo.Generator.InvokeReturnAsIs($hostInfo);
+            }
+            $lldTemplateScript = $lldInfo.GenerateByMetrics($metrics);
+            $additionalText += $lldTemplateScript + [System.Environment]::NewLine;
+            $templateBody += ("`$this.templates.Add([" + $lldInfo.Classname + "]::new(`$this));`r`n");
         }
     }
 
@@ -660,6 +688,7 @@ function ParseHostCatalog ([string] $path) {
     $body = $body.Replace("<initBody>",$initBody); 
     $body = $body.Replace("<updateBody>",$updateBody); 
     $body = $body.Replace("<triggerBody>",$triggerBody);
+    $body = $body.Replace("<additionalText>",$additionalText);
 
     $hostInfo.body = $body;
 
@@ -705,6 +734,7 @@ function ParseLLDCatalog ([string] $path) {
     $UpdateRows = [System.Collections.Generic.List[object]]::new();
 
     [LLDInfo] $lldInfo = [LLDInfo]::new();
+    $lldInfo.className = $className;
     $lldInfo.invokation = $inv;
     $body = $body.Replace('<invokation>','$lld.invokation = [Invokation]::' + $inv.ToString());
 
@@ -725,13 +755,14 @@ function ParseLLDCatalog ([string] $path) {
             foreach($row in $rows) {
                 if ($row -eq "" -or $row[0] -eq "#") { continue; }            
                 $varDetails = $row.Split(" ");                
-                #$lldBody.variables.Add(@{ Type =  $varDetails[0]; Name =  $varDetails[1] });                        
                 $body += "`$lld.defines.Add($($varDetails[1]),$($varDetails[0]))`r`n";
+                $lldInfo.defines.Add($varDetails[1],$varDetails[0]);
             }
         }
         elseif ($block -eq [GeneratorBlock]::GENERATOR) {
-            #$lldInfo.generator = [scriptblock]::Create(Get-Content $file.FullName -Raw);
-            $body += "`$lld.generator = {$(Get-Content $file.FullName -Raw)}`r`n";
+            $generatorScript = Get-Content $file.FullName -Raw;
+            $lldInfo.generator = [scriptblock]::Create($generatorScript);
+            $body += "`$lld.generator = {$generatorScript}`r`n";            
         }
     }
     if ([System.IO.Directory]::Exists($path + "\updates") -eq $true) {        
@@ -741,7 +772,7 @@ function ParseLLDCatalog ([string] $path) {
 
             $updateFileParts = $updateFile.BaseName.Split(" ");
             if ($defineBody -match ($updateFileParts[0] + "[^a-f\d]") -eq $false) { 
-                #$lldInfo.defines.Add("`"$updateFileParts[0]`"",'object');   
+                $lldInfo.defines.Add($updateFileParts[0],'object');   
                 $body += "`$lld.defines.Add(`"$($updateFileParts[0])`",'object')`r`n";
             }
             
@@ -750,9 +781,8 @@ function ParseLLDCatalog ([string] $path) {
             }
 
             $scriptText = (Get-Content -Path $updateFile.FullName -Raw);
-            $body += "`$lld.updates.Add(`"$($updateFileParts[0])`",{
-$scriptText
-});`n";
+            $body += "`$lld.updates.Add(`"$($updateFileParts[0])`",{$([System.Environment]::NewLine+$scriptText+[System.Environment]::NewLine)});`n";
+            $lldInfo.updates.Add($updateFileParts[0], [scriptblock]::Create($scriptText + [System.Environment]::NewLine));
         }
     }    
     if ([System.IO.Directory]::Exists($path + "\triggers") -eq $true) {        
@@ -764,7 +794,7 @@ $scriptText
             $triggerScript = Get-Content -Path ($triggerCatalog.Fullname + "\check.txt") -Raw;
             $triggerDescription = $triggerItemName + "!";
             if ((Test-Path -Path ($triggerCatalog.Fullname + "\message.txt")) -eq $true) {$triggerDescription = Get-Content -Path ($triggerCatalog.Fullname + "\message.txt") -Raw;}
-            #$lldInfo.triggers.Add( $triggerItemName,$triggerScript);
+            $lldInfo.triggers.Add( $triggerItemName,@([scriptblock]::Create($triggerScript),$triggerDescription));
             $body += "`$lld.triggers.Add(`"$triggerItemName`",@({$triggerScript},`"$($triggerDescription.Replace('$','`$'))`"));`n";
         }
     }
