@@ -11,13 +11,13 @@ Set-Location $PSScriptRoot;
 [bool]$DEBUG = $true;
 
 if (test-path "$PSScriptRoot\RuntimeHosts") {
-	Get-ChildItem -Path "$PSScriptRoot\RuntimeHosts" | ? { $_.Delete(); }
+	Get-ChildItem -Path "$PSScriptRoot\RuntimeHosts" | %{ $_.Delete(); }
 } else {
 	New-Item -Path "$PSScriptRoot\RuntimeHosts" -ItemType Directory | out-null
 }
 
 if (test-path "$PSScriptRoot\RuntimeTemplates") {
-	Get-ChildItem -Path "$PSScriptRoot\RuntimeTemplates" | ? { $_.Delete(); }
+	Get-ChildItem -Path "$PSScriptRoot\RuntimeTemplates" | %{ $_.Delete(); }
 } else {
 	New-Item -Path "$PSScriptRoot\RuntimeTemplates" -ItemType Directory | out-null
 }
@@ -26,18 +26,18 @@ $hostGroups = New-Object "System.Collections.Generic.Dictionary[string,[System.C
 $hosts = New-Object "System.Collections.Generic.List[object]";
 $templates = New-Object "System.Collections.Generic.List[object]";
 
-# Сформировать перечень шаблонов и определения их составов
-Write-Host "Поиск шаблонов. Начало..." -ForegroundColor Black -BackgroundColor Green;
+# STEP 1. TEMPLATES. SCAN.
+Write-Host "Search for templates. Begin..." -ForegroundColor Black -BackgroundColor Green;
 
 Set-Location .\Templates;
 
-Write-Host "Поиск шаблонов. Каталог: " (Get-Location).ToString();
+Write-Host "Search for templates. Template: " (Get-Location).ToString();
 
 $templatesCatalog = Get-ChildItem  -Directory;
 
-Write-Host ("Поиск шаблонов. Найдено " + $templatesCatalog.Length.ToString() + " шаблонов...");
+Write-Host ("Search for templates. End. " + $templatesCatalog.Length.ToString() + " templates...");
 
-# Генерация и выполнение скриптов на основании содержания текстовых файлов
+# STEP 2. TEMPLATES. PARSE.
 foreach ($template in $templatesCatalog) {
 
     if ($template.BaseName[0] -eq '#') {
@@ -69,17 +69,18 @@ foreach ($template in $templatesCatalog) {
 }
 
 
-# Поиск груп хостов с одинаковыми шаблонами
-Write-Host "Поиск групп хостов. Начало..." -ForegroundColor Black -BackgroundColor Green;
+# STEP 3. HOSTS GROUPS. SCAN.
+Write-Host "Search for hosts groups. Begin..." -ForegroundColor Black -BackgroundColor Green;
 
 Set-Location ($PSScriptRoot + "\HostGroups");
 
-Write-Host "Поиск групп хостов. Каталог: " (Get-Location).ToString();
+Write-Host "Search for hosts groups. Group: " (Get-Location).ToString();
 
 $hostGroupCatalogs = Get-ChildItem -Directory;
 
-Write-Host ("Поиск групп хостов. Найдено " + $hostGroupCatalogs.Length.ToString() + " шаблонов...");
+Write-Host ("Search for hosts groups. End. " + $hostGroupCatalogs.Length.ToString() + " groups...");
 
+# STEP 4. HOSTS GROUPS. PARSE.
 foreach ($hostGroupCatalog in $hostGroupCatalogs) {
 
     if ($hostGroupCatalog.BaseName[0] -eq '#') {
@@ -88,12 +89,11 @@ foreach ($hostGroupCatalog in $hostGroupCatalogs) {
 
     Write-Host ("Обработка группы хостов " + $hostGroupCatalog.ToString());
 
-    $llds = "";
+    $llds = new-object 'System.Collections.Generic.List[object]';
     if (test-path "$($hostGroupCatalog.FullName)\LLDs") {
         $lldsDirs = Get-ChildItem -Path ("$($hostGroupCatalog.FullName)\LLDs") -Directory;
         foreach ($lldDir in $lldsDirs) {
-            $lldBody = (ParseLLDCatalog -path $lldDir.FullName).body;
-            $llds += $lldBody;
+            $llds.Add((ParseLLDCatalog -path $lldDir.FullName));
         }
     }
 
@@ -110,10 +110,10 @@ foreach ($hostGroupCatalog in $hostGroupCatalogs) {
         if ($hostGroups.ContainsKey($hostName) -eq $false) {
             $hostGroups[$hostName] = New-Object "System.Collections.Generic.List[object]";
             $hostGroups[$hostName].Add((New-Object "System.Collections.Generic.List[string]")); #templates
-            $hostGroups[$hostName].Add(""); #llds
+            $hostGroups[$hostName].Add((new-object 'System.Collections.Generic.List[object]')); #llds
         }
 
-        $hostGroups[$hostName][1] += $llds;
+        $hostGroups[$hostName][1].AddRange($llds);
 
         foreach($template in $templatesList) {
             $template = $template.Trim();
@@ -147,6 +147,8 @@ foreach ($remoteHost in $hostCatalogs) {
     $hostName = $remoteHost.BaseName;
 
     $script = ParseHostCatalog $remoteHost.FullName; 
+
+    $additionalText = '';
     
     if ($hostGroups.ContainsKey($remoteHost.BaseName.ToLower()) -eq $true) {
 
@@ -159,7 +161,21 @@ foreach ($remoteHost in $hostCatalogs) {
             $templateGroupBody += ("`$this.templates.Add([" + $template + "]::new(`$this));`r`n`t");
         }
 
-        $templateGroupBody += $hostGroups[$remoteHost.BaseName.ToLower()][1].Replace("<hostName>",$hostName);;
+        #$templateGroupBody += $hostGroups[$remoteHost.BaseName.ToLower()][1].Replace("<hostName>",$hostName);;
+        $llds = $hostGroups[$remoteHost.BaseName.ToLower()][1];
+        foreach ($lld in $llds) {
+            $metrics = $null;
+            if ($lld.invokation -eq [Invokation]::REMOTE) {                    
+                $metrics = Invoke-Command -ComputerName ($hostName) -scriptblock  $lld.Generator;
+            }
+            elseif ($lld.invokation -eq [Invokation]::LOCAL) {
+                $metrics = $lld.Generator.InvokeReturnAsIs($script);
+            }
+            $lldTemplateScript = $lld.GenerateByMetrics($metrics);
+            $additionalText += $lldTemplateScript + [System.Environment]::NewLine;
+            $templateGroupBody += ("`$this.templates.Add([" + $lld.ClassName + "]::new(`$this));`r`n`t");
+                
+        }
 
         $script.Body = $script.Body.Replace("<templateGroupBody>",$templateGroupBody);
     }
@@ -173,7 +189,7 @@ foreach ($remoteHost in $hostCatalogs) {
         $usingModulesString += "using module $PSScriptRoot\RuntimeTemplates\$el.psm1;`r`n";
     }
 
-    $script.body = $usingModulesString + $script.body;
+    $script.body = $usingModulesString + $additionalText + $script.body;
 
     try {
         Invoke-Expression -Command $script.body;
