@@ -669,9 +669,9 @@ class <className> : HostBase {
 
 	$initBody += '$this.address = "' + $hostAddress +'";' + [Environment]::NewLine;
 	if ($useIP) {
-		$initBody += '$this.connectionType = [connectionType]::IP';
+		$initBody += '$this.connectionType = [connectionType]::IP;' + [Environment]::NewLine;
 	} else {
-		$initBody += '$this.connectionType = [connectionType]::DNS';
+		$initBody += '$this.connectionType = [connectionType]::DNS;' + [Environment]::NewLine;
 	}
     
     if ([System.IO.File]::Exists($path + "\templates.txt") -eq $true) {            
