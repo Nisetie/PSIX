@@ -144,15 +144,25 @@ foreach ($remoteHost in $hostCatalogs) {
         continue;
     }
 
-    $hostName = $remoteHost.BaseName;
+	$hostName = '';
+	$hostAddress = '';
+	$fileName = $remoteHost.BaseName;
+	$fileNameParts = $fileName.Split(' ');
+	if ($fileNameParts.Length -gt 1) {
+		$hostName = $fileNameParts[0];
+		$hostAddress = $fileNameParts[1];
+	}
+	else {
+		$hostName=$hostAddress=$fileName;
+	}
 
     $script = ParseHostCatalog $remoteHost.FullName; 
 
     $additionalText = '';
     
-    if ($hostGroups.ContainsKey($remoteHost.BaseName.ToLower()) -eq $true) {
+    if ($hostGroups.ContainsKey($hostName.ToLower()) -eq $true) {
 
-        $templatesList = $hostGroups[$remoteHost.BaseName.ToLower()][0];
+        $templatesList = $hostGroups[$hostName.ToLower()][0];
         $templateGroupBody = "";
         foreach ($template in $templatesList) {
             if ($script.Templates.Contains($template) -eq $false) {
@@ -161,8 +171,8 @@ foreach ($remoteHost in $hostCatalogs) {
             $templateGroupBody += ("`$this.templates.Add([" + $template + "]::new(`$this));`r`n`t");
         }
 
-        #$templateGroupBody += $hostGroups[$remoteHost.BaseName.ToLower()][1].Replace("<hostName>",$hostName);;
-        $llds = $hostGroups[$remoteHost.BaseName.ToLower()][1];
+        #$templateGroupBody += $hostGroups[$hostName.ToLower()][1].Replace("<hostName>",$hostName);
+        $llds = $hostGroups[$hostName.ToLower()][1];
         foreach ($lld in $llds) {
             $metrics = $null;
             if ($lld.invokation -eq [Invokation]::REMOTE) {                    
