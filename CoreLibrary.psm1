@@ -182,6 +182,7 @@ class HostBase
     [string]$ip;
     [object]$ping;
     [string]$hostName;
+	[string]$address;
     [System.Collections.Generic.List[TemplateBase]]$templates;
     [System.Collections.Generic.List[hashtable]]$updateScripts;
     [System.Collections.Generic.List[TriggerInfo]]$triggers;
@@ -191,22 +192,18 @@ class HostBase
     [System.Collections.ArrayList]$us;
     [object]$checked;
 
-    HostBase([string]$hostN) {
+    HostBase([string]$hostN,[string]$address) {
         $this.hostName = $hostN;
+	$this.address = $address;
         $this.templates = [System.Collections.Generic.List[TemplateBase]]::new();
         $this.updateScripts = [System.Collections.Generic.List[hashtable]]::new();
         $this.triggers = [System.Collections.Generic.List[TriggerInfo]]::new();
         $this.llds =  [System.Collections.Generic.List[LLDInfo]]::new();
         $this.firstUpdate = $true;
-
-        $this.CheckPing();
-        $this.CheckHost();
     }
 
     [string]ConnectionAddress() {
-        #if ($this.connectionType -eq [ConnectionType]::IP) { return $this.ip; }
-        #else { return $this.hostName; }
-        return $this.hostName;
+        return $this.address;
     }
 
     [System.Array]GetUpdateScripts()
@@ -228,8 +225,13 @@ class HostBase
     [void]CheckHost() {
         # Первичная проверка хоста
         try {
-            $this.FQDN = [System.Net.Dns]::GetHostByName($this.hostname).Hostname;
-            $this.ip = [System.Net.Dns]::GetHostByName($this.hostname).AddressList[0].IPAddressToString;
+		if ($this.connectionType -eq [connectionType]::DNS) {
+			$this.FQDN = [System.Net.Dns]::GetHostByName($this.address).Hostname;
+			$this.ip = [System.Net.Dns]::GetHostByName($this.address).AddressList[0].IPAddressToString;
+		} else {
+			$this.FQDN = [System.Net.Dns]::GetHostByAddress($this.address).Hostname;
+			$this.ip = $this.address;		
+		}
         }
         catch {
             $this.ip = $null;
@@ -240,6 +242,9 @@ class HostBase
     # Формирование скриптов для выполнения на стороне хоста
     [void]InitializeData([string[]]$tFilter = $null,[string[]]$tiFilter = $null) {    
          
+        $this.CheckPing();
+        $this.CheckHost();
+
         $this.us = [System.Collections.ArrayList]::new();
 
         if ($this.ping -ne $null) {
@@ -248,7 +253,7 @@ class HostBase
                 break;
                 $lld = $this.LLDs[$i];
                 if ($lld.invokation -eq [Invokation]::REMOTE) {
-                    $this.templates.Add($lld.GenerateByMetrics((Invoke-Command -ComputerName ($this.hostName) -scriptblock  $lld.Generator)));
+                    $this.templates.Add($lld.GenerateByMetrics((Invoke-Command -ComputerName ($this.address) -scriptblock  $lld.Generator)));
                 }
                 elseif ($lld.invokation -eq [Invokation]::LOCAL) {
                     $this.templates.Add($lld.GenerateByMetrics(([scriptblock]::Create($lld.Generator).InvokeReturnAsIs($this))));
@@ -311,7 +316,7 @@ class HostBase
     }
 
     [void]CheckPing() {
-        $this.ping = ((Test-Connection -ComputerName ($this.hostName) -Count 1 -ErrorAction SilentlyContinue).ResponseTime)
+        $this.ping = ((Test-Connection -ComputerName ($this.address) -Count 1 -ErrorAction SilentlyContinue).ResponseTime)
     }
 
     [void]Update()  
@@ -326,7 +331,7 @@ class HostBase
             $this.firstUpdate = $false;
         }        
 
-        $uss = Invoke-Command -ComputerName ($this.hostName) -SessionOption (New-PSSessionOption -NoCompression -NoMachineProfile -IdleTimeout 300000) -ScriptBlock {
+        $uss = Invoke-Command -ComputerName ($this.address) -SessionOption (New-PSSessionOption -NoCompression -NoMachineProfile -IdleTimeout 300000) -ScriptBlock {
             param([object]$us)
             $UpdateScripts = $us.us; # Надо так. Иначе не захватывается почему-то вся передаваемая коллекция скриптов обновлений
             $UpdateScriptsCount = $UpdateScripts.Count;
@@ -614,8 +619,24 @@ function ParseHostCatalog ([string] $path) {
     if ((Test-Path -Path $path) -eq $false) {
         return [string[]]::new(0);
     }
+	$hostName = '';
+	$hostAddress = '';
+	$fileName = (Get-Item -Path $path).Name;
+	$fileNameParts = $fileName.Split(' ');
+	if ($fileNameParts.Length -gt 1) {
+		$hostName = $fileNameParts[0];
+		$hostAddress = $fileNameParts[1];
+	}
+	else {
+		$hostName=$hostAddress=$fileName;
+	}
+$useIP = $false;
+[ipaddress]$ip = [ipaddress]::None;
+if ([ipaddress]::TryParse($hostAddress,[ref]$ip)) {
+	$useIP = $true;
+}
 
-    $className = (Get-Item -Path $path).Name;
+    $className = $hostName;
 
     [MetaModel] $hostInfo = [MetaModel]::new();
     $hostInfo.className = $className;
@@ -625,7 +646,7 @@ function ParseHostCatalog ([string] $path) {
 <additionalText>
 class <className> : HostBase {
     <defineBody>
-`t" + $className + "() : base('$className') {
+`t" + $className + "() : base('$className','$hostAddress') {
         <initBody>
         <templateBody>
         <templateGroupBody>
@@ -646,6 +667,12 @@ class <className> : HostBase {
     $defineRows = [System.Collections.Generic.List[object]]::new();
     $UpdateRows = [System.Collections.Generic.List[object]]::new();
 
+	$initBody += '$this.address = "' + $hostAddress +'";' + [Environment]::NewLine;
+	if ($useIP) {
+		$initBody += '$this.connectionType = [connectionType]::IP';
+	} else {
+		$initBody += '$this.connectionType = [connectionType]::DNS';
+	}
     
     if ([System.IO.File]::Exists($path + "\templates.txt") -eq $true) {            
         $rows = (Get-Content ($path + "\templates.txt"));
