@@ -20,13 +20,20 @@ function To-Zabbix([string]$zabbixSenderPath,[string]$server,[int]$port,[string]
     $result = Invoke-Expression ('& ' + $line);
 }
 
+function Append-AllBytes([string] $path, [byte[]] $bytes)
+{
+    [System.IO.FileMode]$fm = [System.IO.FileMode]::Append;
+    $stream = new-object 'System.IO.FileStream'  -ArgumentList @($path,[System.IO.FileMode]::Append)  
+    $stream.Write($bytes, 0, $bytes.Length);    
+    $stream.Close()
+}
+
 $zabbixSenderPath = $binPath;
-$server = 'ip';
-$port = port;
+$server = '172.24.29.5';
+$port = 10052;
 $hostName = "";
 $key = "";
 $value = "";
-
   
 $Triggers = $instance.Checked;
 $Triggers = ($Triggers | select * -ExcludeProperty Script, DescriptionScript);
@@ -35,22 +42,51 @@ $hostName= $instance.hostname;
 
 $data = '';
 
+$filePath = "$rootPath" + "\Live\Zabbix" + "\$hostName.txt";
+
+Set-Content $filePath '' -NoNewline -force;
+
 foreach ($trigger in $triggers) {
+
+	$data = '';
         
-        if ($Trigger.Template -eq [string]::Empty) { $key = "$($trigger.Item)"; }
-        else { $key = "$($trigger.Template + '.' + $trigger.Item)"; }
+    if ($Trigger.Template -eq [string]::Empty) { $key = "$($trigger.Item)"; }
+    else { $key = "$($trigger.Template + '.' + $trigger.Item)"; }
         
-        $value = "{`"data`":[{`"{#NAME}`":`"$key`",`"{#ID}`":`"$key`"}]}"
+    $value = "{`"data`":[{`"{#NAME}`":`"$key`",`"{#ID}`":`"$key`"}]}"
 
-        $data += $hostName + ' ' + 'checks.lld' + ' ' + '"'+$value.Replace('"','\"') + '"' + [System.Environment]::NewLine;
+    $data += $hostName + ' ' + 'checks.lld' + ' ' + '"'+$value.Replace('"','\"') + '"' + [System.Environment]::NewLine;
 
-        if ($trigger.Status -eq $true) { $value = 0; } else { $value = 1; $trigger.Description = ""; }
+    if ($trigger.Status -eq $true) { $value = 0; } else { $value = 1; $trigger.Description = ""; }
 
-        $data += $hostName + ' ' + "checks[$key,result]" + ' ' + $value + [System.Environment]::NewLine;
-        $data += $hostName + ' ' + "checks[$key,result_str]" + ' ' + ('"'+$trigger.Description.Replace('"','\"')+'"') + [System.Environment]::NewLine;
+    $data += $hostName + ' ' + "checks[$key,result]" + ' ' + $value + [System.Environment]::NewLine;
+    $data += $hostName + ' ' + "checks[$key,result_str]" + ' ' + ('"'+$trigger.Description.Replace('"','\"')+'"') + [System.Environment]::NewLine;
+
+	$b = [System.Text.Encoding]::UTF8.GetBytes($data);
+	Append-AllBytes $filePath $b
 }
 
+$data = '';
 
-$filePath = "$rootPath" + "\Live\Zabbix" + "\$hostName.txt";
-[System.IO.File]::WriteAllBytes($filePath, [System.Text.Encoding]::UTF8.GetBytes($data));
+$metrics = new-object 'System.Collections.Generic.Dictionary[string,string]';
+$metrics.Add('FQDN',$instance.FQDN);
+$metrics.Add('IP',$instance.IP);
+$instance.updateScripts | %{ 
+    $metrics.Add($_.ElementName,'"'+$_.CurrentValue.ToString().Replace('"','\"')+'"');	
+}
+$instance.templates | %{
+	$tName = $_.TemplateName;
+ 	$_.updateScripts | %{
+            $metrics.Add("$tName.$($_.ElementName)",'"'+$_.CurrentValue.ToString().Replace('"','\"')+'"');	
+	}
+}
+
+foreach ($key in $metrics.Keys) {
+    $data += $hostName + ' ' + 'metrics.lld' + ' ' + '"'+"{`"data`":[{`"{#NAME}`":`"$key`",`"{#ID}`":`"$key`"}]}".Replace('"','\"') + '"' + [System.Environment]::NewLine;
+    $data += $hostName + ' ' + "metrics[$key,value]" + ' ' + $metrics[$key] + [System.Environment]::NewLine;
+}
+
+$b = [System.Text.Encoding]::UTF8.GetBytes($data);
+Append-AllBytes $filePath $b
+
 To-Zabbix $zabbixSenderPath $server $port $filePath
