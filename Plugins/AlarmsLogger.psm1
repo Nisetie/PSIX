@@ -1,6 +1,6 @@
 $savePath = $rootPath + "\Live\AlarmsLogger" + "\$($instance.HostName).txt"
 
-if (test-path ($rootPath + "\Live\Alarms")) {
+if (test-path ($rootPath + "\Live\AlarmsLogger")) {
     if (test-path ($savePath)) { }
 } 
 else {
