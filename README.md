@@ -78,6 +78,10 @@ In templates.txt you must write hosts on each row.
 - RuntimeHosts
 - RuntimeTemplates
 
-5.To execute scanning you must run this script under admin rights: Run.ps1.
+5.Disable on enable plugins in Plugins/ folder. Just add or remove from a beginning of each file "#" character.
 
-6.After scan finish all result data will by stored in Live/ folder.
+For default I recommend: AlarmsLogger, MetricsLogger, TriggersLogger.
+
+6.To execute scanning you must run this script under admin rights: Run.ps1.
+
+7.After scan finish all result data will by stored in Live/ folder.
