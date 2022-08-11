@@ -82,6 +82,6 @@ In templates.txt you must write hosts on each row.
 
 For default I recommend: AlarmsLogger, MetricsLogger, TriggersLogger.
 
-6.To execute scanning you must run this script under admin rights: Run.ps1.
+6.To execute scanning you must run this script under admin rights: Run.ps1 or Run.bat.
 
 7.After scan finish all result data will by stored in Live/ folder.
