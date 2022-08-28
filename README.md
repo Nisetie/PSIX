@@ -11,7 +11,7 @@ User can make hosts, templates, template groups and LLDs like in Zabbix.
 
 PSIX is not a full alternative of Zabbix. But can be useful, when you want to collect metrics with difficult evaluations.
 
-PSIX support additional plugins. Which can process an information of host's metrics after his update and do something else with it. For examplse, send metrics to Zabbix.
+PSIX support additional plugins. Which can process an information of host's metrics after his update and do something else with it. For example, send metrics to Zabbix.
 
 System requirements and setting For "server" machine:
 - Windows Management Framework 5.1 with PowerShell 5.1 (https://www.microsoft.com/en-us/download/details.aspx?id=54616) or later.
