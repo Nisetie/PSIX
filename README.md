@@ -21,11 +21,6 @@ System requirements and setting For "server" machine:
 - If there is no domain network and DNS, add ip addresses or hostnames of machines to TrustedHosts list:
   - Set-Item WSMan:\localhost\Client\TrustedHosts -Value { <ComputerName>,[<ComputerName>] | * } -Force
  
-Notes:
-
-1. In current version works stable with hosts in domain. Doesn't tested with hosts without AD and DNS.
-2. ...
-
 Short example:
 
 1.Fill Hosts directory.
