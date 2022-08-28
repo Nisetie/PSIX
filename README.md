@@ -6,7 +6,7 @@ Development started: Nov 2019
 
 Inspired By Zabbix and Mamashev-Man.
 
-This tool implements task of retreiving information about defined metrics and criterias. Then using them to check system(-s) states and stability.
+This tool implements task of retreiving an information about defined metrics and criterias. Then using them to check system(-s) states and stability.
 User can make hosts, templates, template groups and LLDs like in Zabbix.
 
 PSIX is not a full alternative of Zabbix. But can be useful, when you want to collect metrics with difficult evaluations.
