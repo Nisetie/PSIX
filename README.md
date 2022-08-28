@@ -18,7 +18,7 @@ System requirements and setting For "server" machine:
   - For Windows 2012 R2: KB3191564
 - Disable firewall or add rules for passing traffic from/to all checking hosts.
 - For stop prompting script's executions (powershell command): Set-ExecutionPolicy -ExecutionPolicy Unrestricted -Force
-- If there is no domain network and DNS, add ip addresses or hostnames of machines to TustedHosts list:
+- If there is no domain network and DNS, add ip addresses or hostnames of machines to TrustedHosts list:
   - Set-Item WSMan:\localhost\Client\TrustedHosts -Value { <ComputerName>,[<ComputerName>] | * } -Force
  
 Notes:
