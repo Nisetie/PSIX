@@ -80,7 +80,7 @@ class <className> : TemplateBase {
 `$this.triggers.Add(`$triggerInfo);  
 "@;
 
-        $temp = "";
+        $temp = ""; # filler for final definition of LLD-class
 
         $templateName = $this.className;
 
@@ -121,7 +121,6 @@ class <className> : TemplateBase {
                 }   
 
                 $temp = $temp.Replace('<checkScript>', $someScript);
-
                 $temp = $temp.Replace('<templateName>', $templateName);
                 $temp = $temp.Replace('<hostName>', $this.hostName);
                 $temp = $temp.Replace('<triggerName>', $metricAlias + '_' + $key);
@@ -169,7 +168,12 @@ class TriggerInfo
     [bool]$Status;
     [scriptblock] $Script;
     [scriptblock] $DescriptionScript;
-    [string] $Description;
+    [string] $Description; # buffer for $DescriptionScript's result
+
+    [void]Check([object]$node){
+        $this.Status = ($this.Script.Invoke($node) -eq $true);
+        $this.Description = $this.DescriptionScript.Invoke($node);
+    }
 }
 
 class HostBase
@@ -187,8 +191,6 @@ class HostBase
     [System.Collections.Generic.List[hashtable]]$updateScripts;
     [System.Collections.Generic.List[TriggerInfo]]$triggers;
     [System.Collections.Generic.List[LLDInfo]]$llds;
-    [bool]$firstUpdate;
-    #[object]$session;
     [System.Collections.ArrayList]$us;
     [object]$checked;
 
@@ -199,7 +201,6 @@ class HostBase
         $this.updateScripts = [System.Collections.Generic.List[hashtable]]::new();
         $this.triggers = [System.Collections.Generic.List[TriggerInfo]]::new();
         $this.llds =  [System.Collections.Generic.List[LLDInfo]]::new();
-        $this.firstUpdate = $true;
     }
 
     [string]ConnectionAddress() {
@@ -208,32 +209,19 @@ class HostBase
 
     [System.Array]GetUpdateScripts()
     {
-        $en = $this.updateScripts.GetEnumerator();
-        $ar = New-Object 'System.Collections.ArrayList';
-        $curr = $null;
-        while ($en.MoveNext()) {
-            $curr = $en.Current;
-            #if (([datetime]::Now - $curr.UpdateTimestamp).Seconds -ge $curr.UpdateInterval) {
-                #$curr.UpdateTimestamp = [datetime]::Now;
-                [void]$ar.Add($curr);                
-            #}
-        }
-
-        return $ar;
+        return $this.updateScripts.ToArray();
     }
 
     [void]CheckHost() {
-        # Первичная проверка хоста
         try {
-		if ($this.connectionType -eq [connectionType]::DNS) {
-			$this.FQDN = [System.Net.Dns]::GetHostByName($this.address).Hostname;
-			$this.ip = [System.Net.Dns]::GetHostByName($this.address).AddressList[0].IPAddressToString;
-		} else {
-			$this.FQDN = [System.Net.Dns]::GetHostByAddress($this.address).Hostname;
-			$this.ip = $this.address;		
-		}
-        }
-        catch {
+		    if ($this.connectionType -eq [connectionType]::DNS) {
+			    $this.FQDN = [System.Net.Dns]::GetHostByName($this.address).Hostname;
+			    $this.ip = [System.Net.Dns]::GetHostByName($this.address).AddressList[0].IPAddressToString;
+		    } else {
+			    $this.FQDN = [System.Net.Dns]::GetHostByAddress($this.address).Hostname;
+			    $this.ip = $this.address;		
+		    }
+        } catch {
             $this.ip = $null;
             $this.ping = $null;
         }
@@ -247,21 +235,6 @@ class HostBase
 
         $this.us = [System.Collections.ArrayList]::new();
 
-        if ($this.ping -ne $null) {
-            #LLD
-            for ([int]$i = 0; $i -lt $this.LLDs.Count; ++$i)  {
-                break;
-                $lld = $this.LLDs[$i];
-                if ($lld.invokation -eq [Invokation]::REMOTE) {
-                    $this.templates.Add($lld.GenerateByMetrics((Invoke-Command -ComputerName ($this.address) -scriptblock  $lld.Generator)));
-                }
-                elseif ($lld.invokation -eq [Invokation]::LOCAL) {
-                    $this.templates.Add($lld.GenerateByMetrics(([scriptblock]::Create($lld.Generator).InvokeReturnAsIs($this))));
-                }
-                
-            }
-        }
-
         [void]$this.us.Add( # Скрипты данного хоста
             @{
                 id = -1;
@@ -270,9 +243,9 @@ class HostBase
             }
         );
 
-        # Filter of templates
-        if ($tFilter -ne $null) {
-            for ([int]$i = 0; $i -lt $this.templates.Count; ++$i)  {
+        # Filtering
+        if ($tFilter -ne $null) { #inlcude
+            for ($i = 0; $i -lt $this.templates.Count; ++$i)  {
                 $toRemove = $true;
                 if ($tFilter -contains $this.templates[$i].templateName) {
                         $toRemove = $false;
@@ -285,8 +258,8 @@ class HostBase
             
             }
         }
-        if ($tiFilter -ne $null) {
-            for ([int]$i = 0; $i -lt $this.templates.Count; ++$i)  {
+        if ($tiFilter -ne $null) { #exclude
+            for ($i = 0; $i -lt $this.templates.Count; ++$i)  {
                 $toRemove = $false;
                 if ($tiFilter -contains $this.templates[$i].templateName) {
                     $toRemove = $true;
@@ -302,13 +275,11 @@ class HostBase
 
 
         # Скрипты вложенных шаблонов
-        for ([int]$i = 0; $i -lt $this.templates.Count; ++$i) {
-            $t = $this.templates[$i];
-
+        for ($i = 0; $i -lt $this.templates.Count; ++$i) {
             [void]$this.us.Add(
                 @{ 
                     id = $i;
-                    updates = $t.GetUpdateScripts();
+                    updates = $this.templates[$i].GetUpdateScripts();
                     updateDelta = [timespan]::Zero;
                 }
             );
@@ -316,7 +287,7 @@ class HostBase
     }
 
     [void]CheckPing() {
-        $this.ping = ((Test-Connection -ComputerName ($this.address) -Count 1 -ErrorAction SilentlyContinue).ResponseTime)
+        $this.ping = (Test-Connection -ComputerName ($this.address) -Count 1 -ErrorAction SilentlyContinue).ResponseTime;
     }
 
     [void]Update()  
@@ -325,28 +296,24 @@ class HostBase
         $this.UpdateDeltaTemplates = [timespan]::Zero;
 
         $this.CheckPing();
-        if ($this.ping -eq $null) { return; }
 
-        if ($this.firstUpdate -eq $true) {           
-            $this.firstUpdate = $false;
-        }        
+        if ($this.ping -eq $null) { return; }    
 
         $uss = Invoke-Command -ComputerName ($this.address) -SessionOption (New-PSSessionOption -NoCompression -NoMachineProfile -IdleTimeout 300000) -ScriptBlock {
             param([object]$us)
-            $UpdateScripts = $us.us; # Надо так. Иначе не захватывается почему-то вся передаваемая коллекция скриптов обновлений
-            $UpdateScriptsCount = $UpdateScripts.Count;
-            
-            $scriptBlockArgs = @();
+            $ProgressPreference = "SilentlyContinue"
+            $UpdateScripts = $us.us;
+            $UpdateScriptsCount = $UpdateScripts.Count;           
             $ssw = New-Object 'System.Diagnostics.Stopwatch';
-            for ([int]$i = 0; $i -lt $UpdateScriptsCount; ++$i) {
+            for ($i = 0; $i -lt $UpdateScriptsCount; ++$i) {
                 $UpdateScript = $UpdateScripts[$i];
                 $updates = $UpdateScript.updates;
                 $scriptsCount = $updates.Count;                
                 $ssw.Restart();
-                for ([int]$j = 0; $j -lt $scriptsCount; ++$j) {
+                for ($j = 0; $j -lt $scriptsCount; ++$j) {
                     $update = $updates[$j];         
                     # Invoke-Expression makes an irrational shit. Don't use it.	
-                    $update.CurrentValue = [scriptblock]::Create('try { ' + $update.Script + ' } catch { $_ | select CategoryInfo,ErrorDetails | Out-String  }').InvokeReturnAsIs($null);
+                    $update.CurrentValue = [scriptblock]::Create('try { ' + $update.Script + ' } catch { $_.Exception.Message + $_.InvocationInfo.PositionMessage  }').InvokeReturnAsIs($null);
                 }
                 $UpdateScript.UpdateDelta = $ssw.Elapsed;
             }
@@ -358,78 +325,72 @@ class HostBase
 
         if ($uss -eq $null){ return; }
         
-        # Получение обновленных данных данного хоста
+        # Process updates of host
         if ($uss -is [array]){
             $this.us = $uss;
-            #$this.us | Sort-Object -Property id;
             $updateScript = $this.us[0].updates;
-            if ($this.us[0].updateDelta -ne $null) {$this.UpdateDelta = $this.us[0].updateDelta}
+            if ($this.us[0].updateDelta -ne $null) {
+                $this.UpdateDeltaTotal += $this.UpdateDelta = $this.us[0].updateDelta;
+            }
         }
         else {              
             $updateScript = $uss.updates;
-            if ($uss.updateDelta -ne $null) {$this.UpdateDelta = $uss.updateDelta}
+            if ($uss.updateDelta -ne $null) {
+                $this.UpdateDeltaTotal = $this.UpdateDelta = $uss.updateDelta;
+            }
         }
-        for ([int]$j = 0; $j -lt $updateScript.Count; ++$j) {
+        for ($j = 0; $j -lt $updateScript.Count; ++$j) {
             $this.updateScripts[$j] = $updateScript[$j];
         }
 
         
-        # Получение обновленных данных вложенных шаблонов
+        # Process updates of templates
         if ($this.us -is [System.Collections.ArrayList]) {
-            $usc = $this.us.Count;
-            for ([int]$i = 1; $i -lt $usc; ++$i) 
+            for ($i = 1; $i -lt $this.us.Count; ++$i) 
             {
-                $id = $this.us[$i].id;
-                $updateScript = $this.us[$i].updates;
-                $t = $this.templates[$id];
-                $t.UpdateDelta = $this.us[$i].updateDelta;
-                $this.UpdateDeltaTemplates += $this.us[$i].updateDelta;
-                $this.UpdateDeltaTotal += $this.us[$i].updateDelta;
-                $upc = $updateScript.Count;
-                for ([int]$j = 0; $j -lt $upc; ++$j) {
-                    $t.updateScripts[$j] = $updateScript[$j];
+                $updateData = $this.us[$i];
+                $this.UpdateDeltaTemplates += $updateData.updateDelta;
+
+                $template = $this.templates[$updateData.id];
+                $template.UpdateDelta = $updateData.updateDelta;      
+                
+                for ([int]$j = 0; $j -lt $updateData.updates.Count; ++$j) {
+                    $template.updateScripts[$j] = $updateData.updates[$j];
                 }
             }
+
+            $this.UpdateDeltaTotal += $this.UpdateDeltaTemplates;
         }        
 
-        $this.UpdateDeltaTotal += $this.updateDelta;
+        
     }
 
     [void]Check()
     {
-        $result = [System.Collections.Generic.List[TriggerInfo]]::new();
+        $this.Checked = [System.Collections.Generic.List[TriggerInfo]]::new();
 
         $pingTrigger = [TriggerInfo]::new();
         $pingTrigger.Host = $this.hostName;
         $pingTrigger.Template = '';
         $pingTrigger.Item = "ping";
         $pingTrigger.Description = {return "PING FAIL! " + $args[0].hostName.ToString()}.Invoke($this);
-        if ($this.ping -eq $null)
-        {
-            $pingTrigger.Status = $true;
-        } else { 
-            $pingTrigger.Status = $false;
-        }
+        $pingTrigger.Status = ($this.ping -eq $null);
+  
+        $this.Checked.Add($pingTrigger);
 
-        $result.Add($pingTrigger);
+	    if ($this.ping -eq $null) { return; }
 
-	    if ($this.ping -ne $null) {
-            for ($i = 0; $i -ne $this.triggers.Count; ++$i) {
-                $triggerInfo = $this.triggers[$i];
-                $triggerInfo.Status = ($triggerInfo.Script.Invoke($this) -eq $true);
-                $triggerInfo.Description = $triggerInfo.DescriptionScript.Invoke($this);
-            }
-
-            $result.AddRange($this.triggers);
-
-            for ([int]$i = 0; $i -lt $this.templates.Count; ++$i) 
-            {
-                $templateResult = $this.templates[$i].GetTriggers();
-                $result.AddRange($templateResult);
+        if ($this.triggers.Count -gt 0){
+            foreach ($i in 0..($this.triggers.Count-1)) {
+                $this.triggers[$i].Check($this);
             }
         }
+        $this.Checked.AddRange($this.triggers);
 
-        $this.Checked = $result;
+        foreach ($i in 0..($this.templates.Count-1)) {
+            $templateResult = $this.templates[$i].GetTriggers();
+            $this.Checked.AddRange($templateResult);
+        }
     }    
 }
 
@@ -456,26 +417,15 @@ class TemplateBase
 
     [System.Array]GetUpdateScripts()
     {
-        $en = $this.updateScripts.GetEnumerator();
-        $ar = New-Object 'System.Collections.ArrayList';
-        $curr = $null;
-        while ($en.MoveNext()) {
-            $curr = $en.Current;
-            if (([datetime]::Now - $curr.UpdateTimestamp).Seconds -ge $curr.UpdateInterval) {
-                $curr.UpdateTimestamp = [datetime]::Now;
-                [void]$ar.Add($curr);                
-            }
-        }
-
-        return $ar;
+        return $this.updateScripts.ToArray();
     }
 
     [TriggerInfo[]]GetTriggers()
     {
-        for ($i = 0; $i -ne $this.triggers.Count; ++$i) {
-            $triggerInfo = $this.triggers[$i];
-            $triggerInfo.Status = ($triggerInfo.Script.Invoke($this) -eq $true);
-            $triggerInfo.Description = $triggerInfo.DescriptionScript.Invoke($this);
+        if ($this.triggers.Count -gt 0) {
+            foreach ($i in 0..($this.triggers.Count-1)) {
+                $this.triggers[$i].Check($this);
+            }
         }
         return $this.triggers;
     }
