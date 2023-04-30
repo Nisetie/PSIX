@@ -13,13 +13,6 @@ for ($i = 0; $i -lt $plugins.Count; ++$i) {
 }
 
 # CHECK FILTERS
-write ("Groups: $groups")
-write ("Hosts: $hosts")
-write ("Templates: $templates")
-write ("Groups ignore: $groupsIgnore")
-write ("Hosts ignore: $hostsIgnore")
-write ("Templates ignore: $templatesIgnore")
-
 
 if ($groups -ne $null) { $groups = $groups.Split(","); }
 if ($hosts -ne $null) { $hosts = New-Object 'System.Collections.Generic.List[string]' (,$hosts.Split(",")); } else { $hosts = New-Object 'System.Collections.Generic.List[string]'; } 
@@ -55,6 +48,13 @@ if ($hostsIgnore -ne $null) {
         [void] $hosts.RemoveAll( { param($match) $match -eq $hostIgnore } );
     }
 }
+
+write ("Groups: $groups")
+write ("Hosts: $hosts")
+write ("Templates: $templates")
+write ("Groups ignore: $groupsIgnore")
+write ("Hosts ignore: $hostsIgnore")
+write ("Templates ignore: $templatesIgnore")
 
 $hostsFiles = Get-ChildItem -Path ("$PSScriptRoot\RuntimeHosts") | where { $hosts.Count -eq 0 -or $_.BaseName -in $hosts }
 
