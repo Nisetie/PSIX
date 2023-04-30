@@ -81,12 +81,15 @@ foreach ($trigger in $triggers) {
 
     if ($trigger.Status -eq $true) { $value = 0; } else { $value = 1; $trigger.Description = ""; }
 
-	foreach ($oldTrigger in $t2) {
-		if ($key -eq $oldTrigger.Key -and $value -eq $oldTrigger.Value -and $trigger.Description -ne $OldTrigger.Description) {
-			$data += $hostName + ' ' + "checks[$key,result]" + ' 1'+ [System.Environment]::NewLine;
-			$data += $hostName + ' ' + "checks[$key,result_str]" + ' ' + '""' + [System.Environment]::NewLine;
-			[void]$t2.remove($oldTrigger);
-			break;						
+	for ($i=0; $i -lt $t2.Count; $i++) {
+		$oldTrigger = $t2[$i];
+		if ($key -eq $oldTrigger.Key)  {
+			[void]$t2.removeat($i);
+			if ($value -eq $oldTrigger.Value -and $trigger.Description -ne $OldTrigger.Description) {
+				$data += $hostName + ' ' + "checks[$key,result]" + ' 1'+ [System.Environment]::NewLine;
+				$data += $hostName + ' ' + "checks[$key,result_str]" + ' ' + '""' + [System.Environment]::NewLine;
+				break;	
+			}					
 		}
 	}
 
