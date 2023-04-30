@@ -73,7 +73,7 @@ class <className> : TemplateBase {
         $triggerBodyTemplate = @"
 `$triggerInfo = [TriggerInfo]::new();
 `$triggerInfo.Script = {<checkScript>};
-`$triggerInfo.Host = '<hostName>';
+`$triggerInfo.Host = <hostName>;
 `$triggerInfo.Template = '<templateName>';
 `$triggerInfo.Item = '<triggerName>';
 `$triggerInfo.DescriptionScript = {return `"<descriptionScript>`"};
@@ -122,7 +122,7 @@ class <className> : TemplateBase {
 
                 $temp = $temp.Replace('<checkScript>', $someScript);
                 $temp = $temp.Replace('<templateName>', $templateName);
-                $temp = $temp.Replace('<hostName>', $this.hostName);
+                $temp = $temp.Replace('<hostName>', '$this.HostRef.HostName');
                 $temp = $temp.Replace('<triggerName>', $metricAlias + '_' + $key);
 
                 $someScript = $this.triggers[$key][1].ToString();                
