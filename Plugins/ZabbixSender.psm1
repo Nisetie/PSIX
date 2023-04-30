@@ -18,6 +18,7 @@ function To-Zabbix([string]$zabbixSenderPath,[string]$server,[int]$port,[string]
 function To-Zabbix([string]$zabbixSenderPath,[string]$server,[int]$port,[string]$filename) {
     $line = ($zabbixSenderPath + ' -z '+$server+' -p '+$port.ToString()+' -i ' + $filename)
     $result = Invoke-Expression ('& ' + $line);
+    return $result;
 }
 
 function Append-AllBytes([string] $path, [byte[]] $bytes)
@@ -34,6 +35,27 @@ $port = 10052;
 $hostName = "";
 $key = "";
 $value = "";
+
+$t2 = $null;
+
+if (test-path ("$rootPath" + "\Live\Zabbix\" + "$($currentHost.HostName)_PrevTriggers.txt")) {
+    $t2 = Get-Content ("$rootPath" + "\Live\Zabbix\" + "$($currentHost.HostName)_PrevTriggers.txt") -Raw;
+    if ($t2 -ne $null) {
+        $t2 = ConvertFrom-Json -InputObject $t2;
+        }
+    else {
+        $t2 = @();
+    }
+	Set-Content -path ("$rootPath" + "\Live\Zabbix\" + "$($currentHost.HostName)_PrevTriggers.txt") -Value '';
+} 
+
+if (($t2 -is [System.Array]) -eq $False) {
+	$t2 = @($t2);
+}
+
+$t2 = New-Object 'System.Collections.Generic.List[object]' (,$t2)
+
+$oldTriggers = New-Object 'System.Collections.ArrayList';
   
 $Triggers = $instance.Checked;
 $Triggers = ($Triggers | select * -ExcludeProperty Script, DescriptionScript);
@@ -59,12 +81,29 @@ foreach ($trigger in $triggers) {
 
     if ($trigger.Status -eq $true) { $value = 0; } else { $value = 1; $trigger.Description = ""; }
 
+	foreach ($oldTrigger in $t2) {
+		if ($key -eq $oldTrigger.Key -and $value -eq $oldTrigger.Value -and $trigger.Description -ne $OldTrigger.Description) {
+			$data += $hostName + ' ' + "checks[$key,result]" + ' 1'+ [System.Environment]::NewLine;
+			$data += $hostName + ' ' + "checks[$key,result_str]" + ' ' + '""' + [System.Environment]::NewLine;
+			[void]$t2.remove($oldTrigger);
+			break;						
+		}
+	}
+
     $data += $hostName + ' ' + "checks[$key,result]" + ' ' + $value + [System.Environment]::NewLine;
     $data += $hostName + ' ' + "checks[$key,result_str]" + ' ' + ('"'+$trigger.Description.Replace('"','\"')+'"') + [System.Environment]::NewLine;
+	
+	[void]$oldTriggers.Add(@{Key = $key;Value=$value;Description=$trigger.Description});
 
 	$b = [System.Text.Encoding]::UTF8.GetBytes($data);
 	Append-AllBytes $filePath $b
 }
+
+foreach ($oldTrigger in $t2) {
+	[void]$oldTriggers.Add($oldTrigger);
+}
+
+$oldTriggers | ConvertTo-JSON | Out-File -FilePath ("$rootPath" + "\Live\Zabbix\" + "\$($currentHost.HostName)_PrevTriggers.txt") -force 
 
 $data = '';
 
@@ -82,11 +121,14 @@ $instance.templates | %{
 }
 
 foreach ($key in $metrics.Keys) {
+	$data = '';
+
     $data += $hostName + ' ' + 'metrics.lld' + ' ' + '"'+"{`"data`":[{`"{#NAME}`":`"$key`",`"{#ID}`":`"$key`"}]}".Replace('"','\"') + '"' + [System.Environment]::NewLine;
     $data += $hostName + ' ' + "metrics[$key,value]" + ' ' + $metrics[$key] + [System.Environment]::NewLine;
+	
+	$b = [System.Text.Encoding]::UTF8.GetBytes($data);
+	Append-AllBytes $filePath $b
 }
 
-$b = [System.Text.Encoding]::UTF8.GetBytes($data);
-Append-AllBytes $filePath $b
 
-To-Zabbix $zabbixSenderPath $server $port $filePath
+(To-Zabbix $zabbixSenderPath $server $port $filePath) | Add-Content -path $filePath;
