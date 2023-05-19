@@ -58,7 +58,7 @@ write ("Templates ignore: $templatesIgnore")
 
 $hostsFiles = Get-ChildItem -Path ("$PSScriptRoot\RuntimeHosts") | where { $hosts.Count -eq 0 -or $_.BaseName -in $hosts }
 
-$RunspacePool = [runspacefactory]::CreateRunspacePool(1,5)
+$RunspacePool = [runspacefactory]::CreateRunspacePool(1,10)
 $RunspacePool.Open()
 
 $Runspaces = @();
