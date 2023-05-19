@@ -194,13 +194,54 @@ class HostBase
     [System.Collections.ArrayList]$us;
     [object]$checked;
 
+    [PSCustomObject]$ThreadPool;
+
     HostBase([string]$hostN,[string]$address) {
         $this.hostName = $hostN;
-	$this.address = $address;
+        $this.address = $address;
         $this.templates = [System.Collections.Generic.List[TemplateBase]]::new();
         $this.updateScripts = [System.Collections.Generic.List[hashtable]]::new();
         $this.triggers = [System.Collections.Generic.List[TriggerInfo]]::new();
         $this.llds =  [System.Collections.Generic.List[LLDInfo]]::new();
+
+        $this.threadPool = [PSCustomObject]@{
+            threads = new-object 'object[]' -ArgumentList (4)
+            tasks = new-object 'System.Collections.Generic.Queue[hashtable]'
+            InWork = 0
+        }
+        for ($i=0;$i-lt$this.threadPool.threads.Length;++$i){
+            $threadUnit = [PSCustomObject]@{ 
+                IsFree = $true; handler = $null; task = @{inputParameter = $null; script = {}};
+                thread = [powershell]::Create().AddScript({ param($task) $task.script.invoke($task.inputParameter); })
+            }
+            Add-Member -in $threadUnit ScriptMethod Init { $this.thread = $this.thread.AddParameter("task",$this.task); }
+            Add-Member -in $threadUnit ScriptMethod SetTask { param($task) $this.task.script = $task.script; $this.task.inputParameter = $task.inputParameter; }
+            Add-Member -in $threadUnit ScriptMethod BeginRun { $this.IsFree = $false; $this.handler = $this.thread.BeginInvoke();  }
+            Add-Member -in $threadUnit ScriptMethod EndRun { $this.IsFree = $true; $this.thread.EndInvoke($this.handler);  }
+            $threadUnit.Init();
+            $this.threadPool.threads[$i] = $threadUnit;
+        }
+        Add-Member -in $this.threadPool ScriptMethod AddTask { param([hashtable]$task) $this.tasks.Enqueue($task); }
+        Add-Member -in $this.threadPool ScriptMethod Run {
+            $this.inWork = 0;
+            while ($this.tasks.Count + $this.inWork -gt 0) {                
+                foreach ($i in 0..($this.threads.Length-1)) { 
+                    if ($this.tasks.Count -lt 1) {break;}
+                    $thread = $this.threads[$i];
+                    if (!$thread.IsFree) { continue; }
+                    $thread.SetTask($this.tasks.Dequeue());
+                    $thread.BeginRun();           
+                    $this.inWork++; 
+                }
+                foreach ($i in 0..($this.threads.Length-1)) { 
+                    $thread = $this.threads[$i];
+                    if (!$thread.isFree -and $thread.handler.IsCompleted) { 
+                        $this.InWork--; 
+                        $thread.EndRun();  
+                    }
+                }
+            }
+        }
     }
 
     [string]ConnectionAddress() {
@@ -299,70 +340,48 @@ class HostBase
 
         if ($this.ping -eq $null) { return; }    
 
-        $uss = Invoke-Command -ComputerName ($this.address) -SessionOption (New-PSSessionOption -NoCompression -NoMachineProfile -IdleTimeout 300000) -ScriptBlock {
-            param([object]$us)
-            $ProgressPreference = "SilentlyContinue"
-            $UpdateScripts = $us.us;
-            $UpdateScriptsCount = $UpdateScripts.Count;           
-            $ssw = New-Object 'System.Diagnostics.Stopwatch';
-            for ($i = 0; $i -lt $UpdateScriptsCount; ++$i) {
-                $UpdateScript = $UpdateScripts[$i];
-                $updates = $UpdateScript.updates;
-                $scriptsCount = $updates.Count;                
-                $ssw.Restart();
-                for ($j = 0; $j -lt $scriptsCount; ++$j) {
-                    $update = $updates[$j];         
-                    # Invoke-Expression makes an irrational shit. Don't use it.	
-                    $update.CurrentValue = [scriptblock]::Create('try { ' + $update.Script + ' } catch { $_.Exception.Message + $_.InvocationInfo.PositionMessage  }').InvokeReturnAsIs($null);
+        $session = New-PSSession -ComputerName ($this.address);
+        
+        foreach ($uss in $this.us) {
+            $this.ThreadPool.AddTask(@{
+                inputParameter = @($session,$uss); script = {
+                    $ssw = New-Object 'System.Diagnostics.Stopwatch';
+                    $ssw.Restart();
+                    foreach ($update in $args[1].updates) {
+                        $update.CurrentValue = Invoke-Command -Session $args[0] -ScriptBlock ([scriptblock]::Create('try { ' + $update.Script + ' } catch { $_.Exception.Message + $_.InvocationInfo.PositionMessage  }'));
+                    }
+                    $args[1].UpdateDelta = $ssw.Elapsed;
                 }
-                $UpdateScript.UpdateDelta = $ssw.Elapsed;
             }
-            $ssw.Stop();            
+            );
+        }
 
-            return $UpdateScripts;
-            
-        } -ArgumentList @{us=$this.us};
+	    $this.ThreadPool.Run();
+
+	    Remove-PSSession $session;
 
         if ($uss -eq $null){ return; }
         
         # Process updates of host
-        if ($uss -is [array]){
-            $this.us = $uss;
-            $updateScript = $this.us[0].updates;
-            if ($this.us[0].updateDelta -ne $null) {
-                $this.UpdateDeltaTotal += $this.UpdateDelta = $this.us[0].updateDelta;
-            }
+        if ($this.us[0].updateDelta -ne $null) {
+            $this.UpdateDeltaTotal += $this.UpdateDelta = $this.us[0].updateDelta;
         }
-        else {              
-            $updateScript = $uss.updates;
-            if ($uss.updateDelta -ne $null) {
-                $this.UpdateDeltaTotal = $this.UpdateDelta = $uss.updateDelta;
-            }
-        }
-        for ($j = 0; $j -lt $updateScript.Count; ++$j) {
-            $this.updateScripts[$j] = $updateScript[$j];
-        }
-
         
         # Process updates of templates
-        if ($this.us -is [System.Collections.ArrayList]) {
-            for ($i = 1; $i -lt $this.us.Count; ++$i) 
-            {
-                $updateData = $this.us[$i];
-                $this.UpdateDeltaTemplates += $updateData.updateDelta;
 
-                $template = $this.templates[$updateData.id];
-                $template.UpdateDelta = $updateData.updateDelta;      
+        for ($i = 1; $i -lt $this.us.Count; ++$i) 
+        {
+            $updateData = $this.us[$i];
+            $this.UpdateDeltaTemplates += $updateData.updateDelta;
+
+            $template = $this.templates[$updateData.id];
+            $template.UpdateDelta = $updateData.updateDelta;      
                 
-                for ([int]$j = 0; $j -lt $updateData.updates.Count; ++$j) {
-                    $template.updateScripts[$j] = $updateData.updates[$j];
-                }
+            for ([int]$j = 0; $j -lt $updateData.updates.Count; ++$j) {
+                $template.updateScripts[$j] = $updateData.updates[$j];
             }
-
-            $this.UpdateDeltaTotal += $this.UpdateDeltaTemplates;
-        }        
-
-        
+        }
+        $this.UpdateDeltaTotal += $this.UpdateDeltaTemplates;        
     }
 
     [void]Check()
