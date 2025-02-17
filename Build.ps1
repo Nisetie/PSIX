@@ -29,11 +29,14 @@ $templates = New-Object "System.Collections.Generic.List[object]";
 # STEP 1. TEMPLATES. SCAN.
 Write-Host "Search for templates. Begin..." -ForegroundColor Black -BackgroundColor Green;
 
+if ((test-path "$PSScriptRoot\Templates") -eq $false) {
+	New-Item -Path "$PSScriptRoot\Templates" -ItemType Directory | out-null
+}
 Set-Location .\Templates;
 
 Write-Host "Search for templates. Template: " (Get-Location).ToString();
 
-$templatesCatalog = Get-ChildItem  -Directory;
+$templatesCatalog = Get-ChildItem -Directory | ?{$_.Name[0] -ne "#"};
 
 Write-Host ("Search for templates. End. " + $templatesCatalog.Length.ToString() + " templates...");
 
@@ -57,9 +60,7 @@ foreach ($template in $templatesCatalog) {
 
     $usingModulesString = "using module $PSScriptRoot\CoreLibrary.psm1;`r`n";
 
-    Set-Content `
-        -Path ($path)`
-        -Value ($usingModulesString + $script.body);
+    SetContent $path ($usingModulesString + $script.body);
 
     $templates.Add(
     @{
@@ -72,11 +73,14 @@ foreach ($template in $templatesCatalog) {
 # STEP 3. HOSTS GROUPS. SCAN.
 Write-Host "Search for hosts groups. Begin..." -ForegroundColor Black -BackgroundColor Green;
 
+if ((test-path "$PSScriptRoot\HostGroups") -eq $false) {
+	New-Item -Path "$PSScriptRoot\HostGroups" -ItemType Directory | out-null
+}
 Set-Location ($PSScriptRoot + "\HostGroups");
 
 Write-Host "Search for hosts groups. Group: " (Get-Location).ToString();
 
-$hostGroupCatalogs = Get-ChildItem -Directory;
+$hostGroupCatalogs = Get-ChildItem -Directory | ?{$_.Name[0] -ne "#"};
 
 Write-Host ("Search for hosts groups. End. " + $hostGroupCatalogs.Length.ToString() + " groups...");
 
@@ -87,7 +91,7 @@ foreach ($hostGroupCatalog in $hostGroupCatalogs) {
         continue;
     }
 
-    Write-Host ("Обработка группы хостов " + $hostGroupCatalog.ToString());
+    Write-Host ("Processing host groups... " + $hostGroupCatalog.ToString());
 
     $llds = new-object 'System.Collections.Generic.List[object]';
     if (test-path "$($hostGroupCatalog.FullName)\LLDs") {
@@ -99,11 +103,11 @@ foreach ($hostGroupCatalog in $hostGroupCatalogs) {
 
     $hostsListFile = Get-ChildItem -Path $hostGroupCatalog -File -Filter "hosts.txt";
     if ($hostsListFile.Count -eq 0) { continue; }
-    $hostsList = Get-Content -Path $hostsListFile.FullName;
+    $hostsList = GetContent $hostsListFile.FullName;
 
     $templatesListFile = Get-ChildItem -Path $hostGroupCatalog -File -Filter "templates.txt";
     if ($templatesListFile.Count -eq 0) { $templatesList = $null; }
-    else { $templatesList = Get-Content -Path $templatesListFile.FullName; }
+    else { $templatesList = GetContent $templatesListFile.FullName; }
 
     foreach ($hostName in $hostsList){    
         $hostName = $hostName.ToLower();
@@ -128,15 +132,15 @@ foreach ($hostGroupCatalog in $hostGroupCatalogs) {
 }
 
 # Сформировать перечень хостов и их составов
-Write-Host "Поиск хостов. Начало..." -ForegroundColor Black -BackgroundColor Green;
+Write-Host "Hosts scan. Begin..." -ForegroundColor Black -BackgroundColor Green;
 
 Set-Location ($PSScriptRoot + "\Hosts");
 
-Write-Host ("Поиск хостов. Каталог: " + (Get-Location).ToString());
+Write-Host ("Hosts scan. Catalog: " + (Get-Location).ToString());
 
-$hostCatalogs = Get-ChildItem -Directory
+$hostCatalogs = Get-ChildItem -Directory | ?{$_.Name[0] -ne "#"}
 
-Write-Host ("Поиск каталогов описаний хостов. Найдено " + $hostCatalogs.Length.ToString() + " хостов...");
+Write-Host ("Hosts: " + $hostCatalogs.Length.ToString());
 
 foreach ($remoteHost in $hostCatalogs) {
 
@@ -208,9 +212,7 @@ foreach ($remoteHost in $hostCatalogs) {
         $_
     }
 
-    Set-Content `
-        -Path ($path)`
-        -Value ($script.body);
+    SetContent $path $script.body;
 
     $hosts.Add(
     @{
