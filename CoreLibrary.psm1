@@ -1,9 +1,11 @@
+$encoding_main = [Microsoft.PowerShell.Commands.FileSystemCmdletProviderEncoding]::UTF8;
+
+
 Enum ConnectionType { NONE;IP;DNS }
-
 enum GeneratorBlock { EMPTY;TEMPLATE;DEFINE;INIT;UPDATE;GENERATOR }
-
 enum ObjectType {HOST; TEMPLATE}
 enum Invokation {REMOTE; LOCAL}
+enum RemoteTool {PS; SSH}
 
 class MetaModel
 {
@@ -80,7 +82,7 @@ class <className> : TemplateBase {
 `$this.triggers.Add(`$triggerInfo);  
 "@;
 
-        $temp = ""; # filler for final definition of LLD-class
+        $temp = ""; # filter for final definition of LLD-class
 
         $templateName = $this.className;
 
@@ -188,7 +190,7 @@ class HostBase
     [string]$hostName;
 	[string]$address;
     [System.Collections.Generic.List[TemplateBase]]$templates;
-    [System.Collections.Generic.List[hashtable]]$updateScripts;
+    [System.Collections.Generic.List[UpdateScript]]$updateScripts;
     [System.Collections.Generic.List[TriggerInfo]]$triggers;
     [System.Collections.Generic.List[LLDInfo]]$llds;
     [System.Collections.ArrayList]$us;
@@ -196,9 +198,9 @@ class HostBase
 
     HostBase([string]$hostN,[string]$address) {
         $this.hostName = $hostN;
-	$this.address = $address;
+	    $this.address = $address;
         $this.templates = [System.Collections.Generic.List[TemplateBase]]::new();
-        $this.updateScripts = [System.Collections.Generic.List[hashtable]]::new();
+        $this.updateScripts = [System.Collections.Generic.List[UpdateScript]]::new();
         $this.triggers = [System.Collections.Generic.List[TriggerInfo]]::new();
         $this.llds =  [System.Collections.Generic.List[LLDInfo]]::new();
     }
@@ -209,7 +211,7 @@ class HostBase
 
     [System.Array]GetUpdateScripts()
     {
-        return $this.updateScripts.ToArray();
+        return @($this.updateScripts);
     }
 
     [void]CheckHost() {
@@ -218,13 +220,10 @@ class HostBase
 			    $this.FQDN = [System.Net.Dns]::GetHostByName($this.address).Hostname;
 			    $this.ip = [System.Net.Dns]::GetHostByName($this.address).AddressList[0].IPAddressToString;
 		    } else {
-			    $this.FQDN = [System.Net.Dns]::GetHostByAddress($this.address).Hostname;
 			    $this.ip = $this.address;		
+                $this.FQDN = [System.Net.Dns]::GetHostByAddress($this.address).Hostname;			    
 		    }
-        } catch {
-            $this.ip = $null;
-            $this.ping = $null;
-        }
+        } catch { }
     }
 
     # Формирование скриптов для выполнения на стороне хоста
@@ -268,11 +267,9 @@ class HostBase
                 if ($toRemove) {
                     $this.templates.RemoveAt($i);
                     $i--;
-                }
-            
+                }            
             }
         }
-
 
         # Скрипты вложенных шаблонов
         for ($i = 0; $i -lt $this.templates.Count; ++$i) {
@@ -297,9 +294,9 @@ class HostBase
 
         $this.CheckPing();
 
-        if ($this.ping -eq $null) { return; }    
+        if ($this.ping -eq $null) {return;}
 
-        $uss = Invoke-Command -ComputerName ($this.address) -SessionOption (New-PSSessionOption -NoCompression -NoMachineProfile -IdleTimeout 300000) -ScriptBlock {
+        $invokedScript = {
             param([object]$us)
             $ProgressPreference = "SilentlyContinue"
             $UpdateScripts = $us.us;
@@ -309,21 +306,30 @@ class HostBase
                 $UpdateScript = $UpdateScripts[$i];
                 $updates = $UpdateScript.updates;
                 $scriptsCount = $updates.Count;                
-                $ssw.Restart();
+                $ssw.Reset();
+                $ssw.Start();
                 for ($j = 0; $j -lt $scriptsCount; ++$j) {
                     $update = $updates[$j];         
                     # Invoke-Expression makes an irrational shit. Don't use it.	
                     $update.CurrentValue = [scriptblock]::Create('try { ' + $update.Script + ' } catch { $_.Exception.Message + $_.InvocationInfo.PositionMessage  }').InvokeReturnAsIs($null);
+                    $update.UpdateTimestamp = [datetime]::Now;
                 }
-                $UpdateScript.UpdateDelta = $ssw.Elapsed;
+                $ssw.Stop();
+                $UpdateScript.updateDelta = $ssw.Elapsed;
             }
-            $ssw.Stop();            
+            return $UpdateScripts;            
+        };
+        
+        $sessionOptions = New-PSSessionOption -NoCompression -NoMachineProfile -IdleTimeout 300000; 
 
-            return $UpdateScripts;
-            
-        } -ArgumentList @{us=$this.us};
+        if ($this.connectionType -eq [ConnectionType]::DNS) {
+            $uss = Invoke-Command ($this.address) -SessionOption $sessionOptions -ScriptBlock $invokedScript -ArgumentList @{us=$this.us};
+        } else {
+            $uss = Invoke-Command ($this.address) -Authentication Negotiate -SessionOption $sessionOptions -ScriptBlock $invokedScript -ArgumentList @{us=$this.us};
+        }
 
-        if ($uss -eq $null){ return; }
+        if ($uss -eq $null) { return; }
+
         
         # Process updates of host
         if ($uss -is [array]){
@@ -340,12 +346,13 @@ class HostBase
             }
         }
         for ($j = 0; $j -lt $updateScript.Count; ++$j) {
-            $this.updateScripts[$j] = $updateScript[$j];
+            $this.updateScripts[$j].CurrentValue = $updateScript[$j].CurrentValue;
+            $this.updateScripts[$j].UpdateTimestamp = $updateScript[$j].UpdateTimestamp;
         }
 
         
         # Process updates of templates
-        if ($this.us -is [System.Collections.ArrayList]) {
+        if ($this.us -is [array]) {
             for ($i = 1; $i -lt $this.us.Count; ++$i) 
             {
                 $updateData = $this.us[$i];
@@ -355,14 +362,14 @@ class HostBase
                 $template.UpdateDelta = $updateData.updateDelta;      
                 
                 for ([int]$j = 0; $j -lt $updateData.updates.Count; ++$j) {
-                    $template.updateScripts[$j] = $updateData.updates[$j];
+                    $template.updateScripts[$j].CurrentValue = $updateData.updates[$j].CurrentValue;
+                    $template.updateScripts[$j].UpdateTimestamp = $updateData.updates[$j].UpdateTimestamp;
+
                 }
             }
 
             $this.UpdateDeltaTotal += $this.UpdateDeltaTemplates;
-        }        
-
-        
+        }              
     }
 
     [void]Check()
@@ -387,9 +394,11 @@ class HostBase
         }
         $this.Checked.AddRange($this.triggers);
 
-        foreach ($i in 0..($this.templates.Count-1)) {
+        if ($this.templates.Count -gt 0) {
+            foreach ($i in 0..($this.templates.Count-1)) {
             $templateResult = $this.templates[$i].GetTriggers();
             $this.Checked.AddRange($templateResult);
+        }
         }
     }    
 }
@@ -398,15 +407,15 @@ class TemplateBase
 {
 	[timespan]$UpdateDelta;
     [string]$templateName;
-    [object]$hostRef;
-    [System.Collections.Generic.List[hashtable]]$updateScripts;
+    [HostBase]$hostRef;
+    [System.Collections.Generic.List[UpdateScript]]$updateScripts;
     [System.Collections.Generic.List[TriggerInfo]]$triggers;
 
-    TemplateBase([object]$hostReference)
+    TemplateBase([HostBase]$hostReference)
     {
         $this.hostRef = $hostReference;
         $this.templateName = $this.GetType().Name;
-        $this.updateScripts = [System.Collections.Generic.List[hashtable]]::new();
+        $this.updateScripts = [System.Collections.Generic.List[UpdateScript]]::new();
         $this.triggers = [System.Collections.Generic.List[TriggerInfo]]::new();
     }
 
@@ -417,7 +426,7 @@ class TemplateBase
 
     [System.Array]GetUpdateScripts()
     {
-        return $this.updateScripts.ToArray();
+        return @($this.updateScripts);
     }
 
     [TriggerInfo[]]GetTriggers()
@@ -431,8 +440,26 @@ class TemplateBase
     }
 }
 
+class UpdateScript {
+	[string]$TemplateName;
+	[string]$ElementName;
+	[object]$CurrentValue;
+	[string]$Script;
+	[datetime]$UpdateTimestamp;
+	[bool]$IsLocal;
+
+    UpdateScript() { }
+}
+
+function GetContent([string]$fileName) {
+    return Get-Content -Path $fileName -Encoding $encoding_main -Raw;
+}
+function SetContent([string]$fileName, [string]$text) {
+    Set-Content -Path $fileName -Value $text -Encoding $encoding_main;
+}
+
 function ParseUpdatesCatalog([MetaModel]$info,[string]$className,[string]$path) {
-    $updates = Get-ChildItem -Path $path -File -Filter "*.txt";
+    $updates = Get-ChildItem -Path $path -File -Filter "*.ps1";
     $id = 0;
     $initBody = '';
     for ($i = 0; $i -ne $updates.Count; ++$i) {
@@ -440,29 +467,21 @@ function ParseUpdatesCatalog([MetaModel]$info,[string]$className,[string]$path) 
         if ($updateFile.BaseName[0] -eq '#') {continue;}
 
 	    $updateFileParts = $updateFile.BaseName.Split(" ");
-        if ($updateFile.Basename -match '\s\d*\s*') {
-            $updateIntervalElement = [int]::Parse($Matches.Values[0].Trim());
-        } else { 
-            $updateIntervalElement = 1;
-        }
-        if ($updateFile.Basename -match '\slocal\s*') {
-            $isLocal = $true;
-        } else {
-            $isLocal = $false;
-        }
-        $scriptText = (Get-Content -Path $updateFile.FullName -Raw);
-        $initBody += "`$this.updateScripts.Add(
-        @{
-            TemplateName = `"$className`";
-            ElementName = `"$($updateFile.BaseName)`";
-            CurrentValue = `$null;
-            Script = [scriptblock]::create({"+ $scriptText + "});
-            UpdateInterval = $($updateIntervalElement.ToString());
-            UpdateTimestamp = [datetime]::MinValue;
-            IsLocal = `$$isLocal;
-            Exception = [string]::Empty;
-        });
-        ";
+		
+        $isLocal = $false;
+        if ($updateFile.Basename -match '\slocal\s*') { $isLocal = $true; }
+	
+        $scriptText = GetContent $updateFile.FullName;
+        $initBody += @"
+`$updateScript = [UpdateScript]::new();
+`$updateScript.TemplateName = `"$className`";
+`$updateScript.ElementName = `"$($updateFile.BaseName)`";
+`$updateScript.CurrentValue = `$null;
+`$updateScript.Script = {$scriptText};
+`$updateScript.UpdateTimestamp = [datetime]::MinValue;
+`$updateScript.IsLocal = `$$isLocal
+`$this.updateScripts.Add(`$updateScript);
+"@;
         $info.variables.Add($updateFile.BaseName, $id);
         ++$id;
     }
@@ -485,11 +504,11 @@ function ParseTriggersCatalog([MetaModel]$info,[string]$path) {
         $triggerCatalog = $triggers[$i];
         $triggerItemName = $triggerCatalog.BaseName.trim(); 
         if ($triggerItemName[0] -eq '#') { continue; }
-        if ((Test-Path -Path ($triggerCatalog.Fullname + "\check.txt")) -eq $false) { continue; } 
-        $triggerScript = Get-Content -Path ($triggerCatalog.Fullname + "\check.txt") -Raw;
+        if ((Test-Path -Path ($triggerCatalog.Fullname + "\check.ps1")) -eq $false) { continue; } 
+        $triggerScript = GetContent ($triggerCatalog.Fullname + "\check.ps1");
         $triggerDescription = $triggerItemName + "!";
-        if ((Test-Path -Path ($triggerCatalog.Fullname + "\message.txt")) -eq $true) {
-            $triggerDescription = Get-Content -Path ($triggerCatalog.Fullname + "\message.txt") -Raw;
+        if ((Test-Path -Path ($triggerCatalog.Fullname + "\message.ps1")) -eq $true) {
+            $triggerDescription = GetContent ($triggerCatalog.Fullname + "\message.ps1");
         }
         $s = ($triggerScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | select value;
         foreach ($el in $s) { $el = $el.Value; $triggerScript = ($triggerScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $info.variables[$el.Replace("`$this.","")] + "].CurrentValue"));  }   
@@ -509,8 +528,6 @@ function ParseTriggersCatalog([MetaModel]$info,[string]$path) {
 }
 
 function ParseTemplateCatalog ([string] $path) {
-
-    [int]$updateIntervalDefault = 1;
 
     if ((Test-Path -Path $path) -eq $false) {
         return [string[]]::new(0);
@@ -564,8 +581,6 @@ function ParseTemplateCatalog ([string] $path) {
 
 function ParseHostCatalog ([string] $path) {
 
-    [int]$updateIntervalDefault = 1;
-
     if ((Test-Path -Path $path) -eq $false) {
         return [string[]]::new(0);
     }
@@ -580,11 +595,11 @@ function ParseHostCatalog ([string] $path) {
 	else {
 		$hostName=$hostAddress=$fileName;
 	}
-$useIP = $false;
-[ipaddress]$ip = [ipaddress]::None;
-if ([ipaddress]::TryParse($hostAddress,[ref]$ip)) {
-	$useIP = $true;
-}
+    $useIP = $false;
+    [ipaddress]$ip = [ipaddress]::None;
+    if ([ipaddress]::TryParse($hostAddress,[ref]$ip)) {
+	    $useIP = $true;
+    }
 
     $className = $hostName;
 
@@ -624,8 +639,8 @@ class <className> : HostBase {
 		$initBody += '$this.connectionType = [connectionType]::DNS;' + [Environment]::NewLine;
 	}
     
-    if ([System.IO.File]::Exists($path + "\templates.txt") -eq $true) {            
-        $rows = (Get-Content ($path + "\templates.txt"));
+    if ([System.IO.File]::Exists($path + "\templates") -eq $true) {            
+        $rows = GetContent ($path + "\templates");
         foreach($row in $rows) {
             if ($row -eq "" -or $row[0] -eq "#") { continue; }
             $templateBody += ("`$this.templates.Add([" + $row.Trim() + "]::new(`$this));`r`n");
@@ -678,12 +693,6 @@ function ParseLLDCatalog ([string] $path) {
     $body += "`$lld.hostRef = `$this`r`n";
     $body += "`$lld.hostName = `"<hostName>`"`r`n";
     $body += "<invokation>`r`n";
-    
-    <#
-    if ((Test-Path -Path $path) -eq $false) {
-        return [string[]]::new(0);
-    }
-    #>
 
     $fileNameParts = (Get-Item -Path $path).Name.Split(' ');
     $className = $fileNameParts[0];
@@ -727,7 +736,7 @@ function ParseLLDCatalog ([string] $path) {
 
         if ($block -eq [GeneratorBlock]::DEFINE) {
 
-            $rows = (Get-Content $file.FullName);
+            $rows = GetContent $file.FullName;
 
             foreach($row in $rows) {
                 if ($row -eq "" -or $row[0] -eq "#") { continue; }            
@@ -737,7 +746,7 @@ function ParseLLDCatalog ([string] $path) {
             }
         }
         elseif ($block -eq [GeneratorBlock]::GENERATOR) {
-            $generatorScript = Get-Content $file.FullName -Raw;
+            $generatorScript = GetContent $file.FullName;
             $lldInfo.generator = [scriptblock]::Create($generatorScript);
             $body += "`$lld.generator = {$generatorScript}`r`n";            
         }
@@ -757,7 +766,7 @@ function ParseLLDCatalog ([string] $path) {
             #...for future
             }
 
-            $scriptText = (Get-Content -Path $updateFile.FullName -Raw);
+            $scriptText = GetContent $updateFile.FullName;
             $body += "`$lld.updates.Add(`"$($updateFileParts[0])`",{$([System.Environment]::NewLine+$scriptText+[System.Environment]::NewLine)});`n";
             $lldInfo.updates.Add($updateFileParts[0], [scriptblock]::Create($scriptText + [System.Environment]::NewLine));
         }
@@ -767,10 +776,12 @@ function ParseLLDCatalog ([string] $path) {
         foreach ($triggerCatalog in $triggers) {
             $triggerItemName = $triggerCatalog.BaseName; 
             if ($triggerItemName[0] -eq '#') { continue; }
-            if ((Test-Path -Path ($triggerCatalog.Fullname + "\check.txt")) -eq $false) { continue; } 
-            $triggerScript = Get-Content -Path ($triggerCatalog.Fullname + "\check.txt") -Raw;
+            if ((Test-Path -Path ($triggerCatalog.Fullname + "\check.ps1")) -eq $false) { continue; } 
+            $triggerScript = GetContent ($triggerCatalog.Fullname + "\check.ps1");
             $triggerDescription = $triggerItemName + "!";
-            if ((Test-Path -Path ($triggerCatalog.Fullname + "\message.txt")) -eq $true) {$triggerDescription = Get-Content -Path ($triggerCatalog.Fullname + "\message.txt") -Raw;}
+            if ((Test-Path -Path ($triggerCatalog.Fullname + "\message.ps1")) -eq $true) {
+                $triggerDescription = GetContent ($triggerCatalog.Fullname + "\message.ps1");
+            }
             $lldInfo.triggers.Add( $triggerItemName,@([scriptblock]::Create($triggerScript),$triggerDescription));
             $body += "`$lld.triggers.Add(`"$triggerItemName`",@({$triggerScript},`"$($triggerDescription.Replace('$','`$'))`"));`n";
         }
