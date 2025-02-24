@@ -1,14 +1,14 @@
-$savePath = $rootPath + "\Live\AlarmsLogger" + "\$($instance.HostName).txt"
+# Write triggers only with :true" checks
 
-if (test-path ($rootPath + "\Live\AlarmsLogger")) {
-    if (test-path ($savePath)) { }
-} 
+$savePath = [System.IO.Path]::Combine($rootPath,"Live","AlarmsLogger","$($instance.HostName).txt");
+
+if (test-path ([System.IO.Path]::Combine($rootPath,"Live","AlarmsLogger"))) {} 
 else {
-	New-Item -Path ($rootPath + "\Live\AlarmsLogger") -ItemType Directory | out-null
+	New-Item -Path ([System.IO.Path]::Combine($rootPath,"Live","AlarmsLogger")) -ItemType Directory | out-null
 }
 
 $actualTriggers = $instance.Checked | where { $_.Status -eq $true};
-$actualTriggers = ($actualTriggers | select * -ExcludeProperty Script, DescriptionScript);
+$actualTriggers = ($actualTriggers | select Host,Template,Item,@{Name="CheckTimestamp";Expression={$_.CheckTimestamp.ToString('o')} },Description -ExcludeProperty Script, DescriptionScript);
 
 
 if ($actualTriggers.Count -eq 0) {
@@ -17,7 +17,7 @@ if ($actualTriggers.Count -eq 0) {
     }
 } else {
     
-    $actualTriggers | ConvertTo-JSON | Out-File -FilePath ($savePath) -force        
+    $actualTriggers | ConvertTo-JSON -Depth 100 | Out-File -FilePath ($savePath) -force        
 }
 
 $actualTriggers = $null;

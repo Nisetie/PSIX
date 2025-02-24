@@ -1,146 +1,154 @@
-param($groups=$null,$hosts=$null,$templates=$null,$hostsIgnore=$null,$groupsIgnore=$null,$templatesIgnore=$null)
-import-module ($PSScriptRoot +  ".\CoreLibrary.psm1")
+using module .\CoreLibrary.psm1
 
-# LOADING PLUGINS
-$plugins = new-object System.Collections.Generic.List[object];
-if ((Test-Path ("$PSScriptRoot\Plugins\")) -eq $true) {
-    Get-ChildItem -Path "$PSScriptRoot\Plugins\" | %{ $plugins.Add($_.BaseName); }
-}
-for ($i = 0; $i -lt $plugins.Count; ++$i) {
-    $pluginName = $plugins[$i].Trim();
-    if ($pluginName -eq [string]::Empty -or $pluginName[0] -eq '#') { continue; }
-    $plugins[$i] = (Get-Content -Path $PSScriptRoot\Plugins\$pluginName.psm1 -Raw);
-}
+param([string]$targetPath=$null)
 
-# CHECK FILTERS
+function Oneshot() {
 
-if ($groups -ne $null) { $groups = $groups.Split(","); }
-if ($hosts -ne $null) { $hosts = New-Object 'System.Collections.Generic.List[string]' (,$hosts.Split(",")); } else { $hosts = New-Object 'System.Collections.Generic.List[string]'; } 
-if ($templates -ne $null) { $templates = $templates.Split(","); }
-if ($groupsIgnore -ne $null) { $groupsIgnore = $groupsIgnore.Split(","); }
-if ($hostsIgnore -ne $null) { $hostsIgnore = $hostsIgnore.Split(","); }
-if ($templatesIgnore -ne $null) { $templatesIgnore = $templatesIgnore.Split(","); }
+    if ([string]::IsNullOrEmpty($targetPath)) { $targetPath = $PSScriptRoot; }
 
-if ($groups -ne $null) {
-    $hostsInGroups = New-Object 'System.Collections.Generic.List[string]';
-    foreach ($group in $groups) {
-        $hostsInGroup = Get-Content ("$PSScriptRoot\HostGroups\$group\hosts.txt");
-        foreach ($hostInGroup in $hostsInGroup) {
-            $hostsInGroups.Add($hostInGroup);   
-        }
+    # LOADING PLUGINS
+    $plugins = new-object System.Collections.Generic.List[object];
+    if ((Test-Path ([System.IO.Path]::Combine($PSScriptRoot,"Plugins"))) -eq $true) {
+        Get-ChildItem -Path ([System.IO.Path]::Combine($PSScriptRoot,"Plugins")) | %{ $plugins.Add($_); }
     }
-
-    $hosts.AddRange($hostsInGroups);
-}
-
-if ($groupsIgnore -ne $null) {
-    $hostsInGroups = New-Object 'System.Collections.Generic.List[string]';
-    foreach ($group in $groups) {
-        $hostsInGroup = Get-Content ("$PSScriptRoot\HostGroups\$group\hosts.txt");
-        foreach ($hostInGroup in $hostsInGroup) {
-            [void] $hosts.RemoveAll( { param($match) $match -eq $hostsInGroup } );
-        }
+    for ($i = 0; $i -lt $plugins.Count; ++$i) {
+        $pluginName = $plugins[$i].BaseName.Trim();
+        if ($pluginName -eq [string]::Empty -or $pluginName[0] -eq '#') { continue; }
+        $plugins[$i] = GetContent ($plugins[$i].FullName);
     }
-}
+      
+    $hostsFiles = Get-ChildItem -Path ([System.IO.Path]::Combine($targetPath,"RuntimeHosts"))
 
-if ($hostsIgnore -ne $null) {
-    foreach ($hostIgnore in $hostsIgnore) {
-        [void] $hosts.RemoveAll( { param($match) $match -eq $hostIgnore } );
-    }
-}
+    $RunspacePool = [runspacefactory]::CreateRunspacePool(1,[System.Environment]::ProcessorCount)
+    $RunspacePool.Open()
 
-write ("Groups: $groups")
-write ("Hosts: $hosts")
-write ("Templates: $templates")
-write ("Groups ignore: $groupsIgnore")
-write ("Hosts ignore: $hostsIgnore")
-write ("Templates ignore: $templatesIgnore")
+    $Runspaces = @();
 
-$hostsFiles = Get-ChildItem -Path ("$PSScriptRoot\RuntimeHosts") | where { $hosts.Count -eq 0 -or $_.BaseName -in $hosts }
+    $mainScript = {
+	    param(
+            [string]$hostName,
+            [string]$usingPath,
+            [System.Collections.Generic.List[object]]$pluginsList,
+            [string]$rootPath #for plugins
+        )
 
-$RunspacePool = [runspacefactory]::CreateRunspacePool(1,10)
-$RunspacePool.Open()
-
-$Runspaces = @();
-
-$mainScript = {
-	param(
-        [string]$hostName,
-        [string]$usingPath,
-        [System.Collections.Generic.List[object]]$pluginsList,
-        [string]$rootPath, #for plugins
-        [object]$filters #template filter
-    )
-
-    $runScript =@"
+        $runScript =@"
 using module $usingPath        
 
-param(`$filters)
-
-`$instance = new-object $hostName        
-`$instance.InitializeData(`$filters.Include,`$filters.Exclude);        
+`$instance = new-object $hostName            
 `$instance.Update();            
 `$instance.Check();            
 "@;
 
-    for ($it=0; $it -lt $pluginsList.Count; ++$it) { 
-        $runScript += $pluginsList[$it].ToString() + [System.Environment]::NewLine; 
-    }
+        for ($it=0; $it -lt $pluginsList.Count; ++$it) { 
+            $runScript += $pluginsList[$it].ToString() + [System.Environment]::NewLine; 
+        }
 
-    [scriptblock]::Create($runScript).InvokeReturnAsIs($filters);
-};
+        $runScriptResult = [scriptblock]::Create($runScript).InvokeReturnAsIs($null);
+        if ($runScriptResult -ne $null) { Write-Output $runScriptResult; }
+    };
 
-for ($i = 0; $i -lt $hostsFiles.Count; ++$i) {
+    for ($i = 0; $i -lt $hostsFiles.Count; ++$i) {
 
-    $PSInstance = [powershell]::Create();
-    [void]$PSInstance.AddScript($mainScript);
-    [void]$PSInstance.Addparameter('hostName',($hostsFiles[$i].BaseName))
-    [void]$PSInstance.AddParameter('usingPath',$hostsFiles[$i].FullName)
-    [void]$PSInstance.AddParameter('pluginsList',$plugins)
-    [void]$PSInstance.AddParameter('rootPath',$PSScriptRoot);
-    [void]$PSInstance.AddParameter('filters',@{Include=$templates;Exclude=$templatesIgnore});
+        $PSInstance = [powershell]::Create();
+        [void]$PSInstance.AddScript($mainScript);
+        [void]$PSInstance.Addparameter('hostName',($hostsFiles[$i].BaseName))
+        [void]$PSInstance.AddParameter('usingPath',$hostsFiles[$i].FullName)
+        [void]$PSInstance.AddParameter('pluginsList',$plugins)
+        [void]$PSInstance.AddParameter('rootPath',$targetPath);
 
-    $PSInstance.RunspacePool = $RunspacePool
+        $PSInstance.RunspacePool = $RunspacePool
 
-    $Runspaces += New-Object psobject -Property @{
-	    HostName = $hostsFiles[$i].BaseName
-        Instance = $PSInstance
-        IAResult = $null
-    }
-}
-
-
-write ('[' + (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffffff") + '] ' + "Сканирование началось.");
-
-for ($i = 0; $i -lt $Runspaces.Count; ++$i) { 
-	$iaResult = $Runspaces[$i].Instance.BeginInvoke(); 
-	$Runspaces[$i].IAResult = $iaResult; 
-}
-
-# Wait for the the runspace jobs to complete      
-$completed = $true;
-while ($true) {
-    $completed = $true;
-    for ($i = 0; $i -lt $Runspaces.Count; ++$i) {
-        if ($Runspaces[$i].IAResult.IsCompleted -eq $false) {
-            $completed = $false;
-            break;
+        $Runspaces += New-Object psobject -Property @{
+	        HostName = $hostsFiles[$i].BaseName
+            Instance = $PSInstance
+            IAResult = $null
         }
     }
-    if ($completed -eq $true) { break; } 
-    else { sleep -Milliseconds 100; }
-}
+
+
+    Write-Output ('[' + (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") + '] ' + 'Scanning...');
+
+    for ($i = 0; $i -lt $Runspaces.Count; ++$i) { 
+	    $iaResult = $Runspaces[$i].Instance.BeginInvoke(); 
+	    $Runspaces[$i].IAResult = $iaResult; 
+    }
+
+    # Wait for the the runspace jobs to complete      
+    $completed = $true;
+    while ($true) {
+        $completed = $true;
+        for ($i = 0; $i -lt $Runspaces.Count; ++$i) {
+            if ($Runspaces[$i].IAResult.IsCompleted -eq $false) {
+                $completed = $false;
+                break;
+            }
+        }
+        if ($completed -eq $true) { break; } 
+        else { sleep -Milliseconds 100; }
+    }
     
 
-for ($i = 0; $i -lt $Runspaces.Count; ++$i) {
-    $data = $Runspaces[$i].Instance.EndInvoke($Runspaces[$i].IAResult);
-	if ($data -ne $null) { 
-        Write-Host($Runspaces[$i].HostName) -ForegroundColor Red; 
-        Write-Output $data; 
+    for ($i = 0; $i -lt $Runspaces.Count; ++$i) {
+        $data = $Runspaces[$i].Instance.EndInvoke($Runspaces[$i].IAResult);
+	    if ($data -ne $null) { 
+            Write-Output $data; 
+        }
     }
+
+    Write-Output ('[' + (Get-Date).ToString("yyyy-MM-dd HH:mm:ss") + '] ' + 'Finish.' );
+
+    $RunspacePool.Close();
+    $RunspacePool.Dispose();
+    $RunspacePool = $null;
+    $Runspaces = $null;
+    $mainScript = $null;
+
+    $plugins = $null;
+    $groups = $null;
+    $hosts = $null;
+    $templates = $null;
+    $groupsIgnore = $null;
+    $hostsIgnore = $null;
+    $templatesIgnore = $null;
+    $hostsInGroups = $null;
+    $hostsFiles = $null;
+
+    [System.GC]::Collect();
+    [System.GC]::WaitForPendingFinalizers();
+
 }
 
-write ('[' + (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffffff") + '] ' + "Завершено." );
+$lockFile = [System.IO.Path]::Combine($targetPath,".lock");
+$waitCount = 60;
+$success = $false;
 
-$RunspacePool.Close();
-$RunspacePool.Dispose();
+cls;
+while ($true) {
+    try {
+        $FileStream = [System.IO.File]::Open($lockFile, [System.IO.FileMode]::Create,[System.IO.FileAccess]::Write,[System.IO.FileShare]::None);
+        Oneshot;
+        $success = $true;
+    
+    } catch {
+        cls
+        if ($FileStream -eq $null) {
+            Write-Host "[$([datetime]::Now.ToString("yyyy-MM-dd HH:mm:ss"))] Waiting lockfile...";
+            sleep -Seconds 1;
+            $waitCount--;
+            if ($waitCount -gt 0) { goto begin; }
+        } else {
+            $Error | Write-Host;
+            $Error.Clear();
+        }
+    } finally {
+        if ($FileStream) {
+            $FileStream.Close()
+            $FileStream.Dispose()
+            Remove-Item -Path $lockFile -Force;
+            
+        }
+    }
+
+    if ($success) { break; }
+}

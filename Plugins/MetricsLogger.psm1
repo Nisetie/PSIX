@@ -1,14 +1,16 @@
 $currentHost = $instance;
 
-if (test-path ($rootPath + "\Live\MetricsLogger\")) {} 
+$liveMetricsPath = [System.IO.Path]::Combine($rootPath,"Live","MetricsLogger");
+
+if (test-path $liveMetricsPath) {} 
 else {
-	New-Item -Path ($rootPath + "\Live\MetricsLogger\") -ItemType Directory | out-null
+	New-Item -Path $liveMetricsPath -ItemType Directory | out-null
 }
 
 $t2 = $null;
 
-if (test-path ("$rootPath" + "\Live\MetricsLogger\" + "\$($currentHost.HostName).txt")) {
-    $t2 = Get-Content ("$rootPath" + "\Live\MetricsLogger\" + "\$($currentHost.HostName).txt") -Raw;
+if (test-path ([System.IO.Path]::Combine($liveMetricsPath,"$($currentHost.HostName).txt"))) {
+    $t2 = GetContent ([System.IO.Path]::Combine($liveMetricsPath,"$($currentHost.HostName).txt"));
     $t2 = ConvertFrom-Json -InputObject $t2;
 } 
 
@@ -17,28 +19,28 @@ $h =  @{
     FQDN = $currentHost.FQDN
     IP = $currentHost.ip
     ping = $currentHost.ping
+    UpdateTimestamp = $currentHost.UpdateTimestamp.ToString('o')
     UpdateDelta = $currentHost.UpdateDelta.ToString()
     UpdateDeltaTotal = $currentHost.UpdateDeltaTotal.ToString();
     UpdateDeltaTemplates = $currentHost.UpdateDeltaTemplates.ToString();
 };
         
-$currentHost.updateScripts | %{ $h.($_.ElementName) = "$($_.CurrentValue)";  }
+$currentHost.updateScripts.GetEnumerator() | %{ $h.($_.Value.ElementName) = @{ Value =  "$($_.Value.CurrentValue)";  UpdateTimestamp =  $_.Value.UpdateTimestamp.ToString('o')}  }
 
 $templates = @();
 
-$templates += $currentHost.templates | %{
+$templates += $currentHost.templates.GetEnumerator() | %{
         $r = @{};
-        $r.TemplateName = $_.updateScripts[0].templateName
-        $r.UpdateDelta = $_.UpdateDelta.ToString()
-        $_.updateScripts | %{ $r.($_.ElementName) = "$($_.CurrentValue)";  }
+        $r.TemplateName = $_.Value.updateScripts[0].templateName
+        $r.UpdateDelta = $_.Value.UpdateDelta.ToString()
+        $_.Value.updateScripts.GetEnumerator() | %{ $r.($_.Value.ElementName) = @{ Value = "$($_.Value.CurrentValue)";UpdateTimestamp =  $_.Value.UpdateTimestamp.ToString('o')}  }
         return $r;
     }
         
 $data= @{
     Host = $h
     Templates = $templates 
-};     
-
+};    
 
 if ($t2 -ne $null) {
     foreach ($property in $t2.Host.psobject.Properties) {
@@ -58,6 +60,5 @@ if ($t2 -ne $null) {
         }     
     }
 }
-      
 
-$data | ConvertTo-JSON | Out-File -FilePath ( "$rootPath" + "\Live\MetricsLogger\" + "\$($currentHost.HostName).txt" ) -force 
+$data | ConvertTo-JSON -Depth 100 | Out-File -FilePath ( [System.IO.Path]::Combine($liveMetricsPath,"$($currentHost.HostName).txt") ) -force 
