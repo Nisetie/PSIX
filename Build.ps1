@@ -1,25 +1,41 @@
-# --- INCLUDE
-using module .\CoreLibrary.psm1
+using module ".\CoreLibrary.psm1"
 
-# --- INITIALIZATION
+param([string]$targetPath=$null);
 
 cls;
 
+if ([string]::IsNullOrEmpty($targetPath)) { 
+    Write-Output "Target path argument is empty!";
+    return;
+    #$targetPath = $PSScriptRoot; 
+}
+if ($targetPath -eq $PSScriptRoot) { 
+    Write-Output "Target path cannot be in PSIX's core root!";
+    return;
+}
+
+# --- INCLUDE
+
+
+# --- INITIALIZATION
+
 $initialLocation = Get-Location;
-Set-Location $PSScriptRoot;
+Set-Location $targetPath;
 
 [bool]$DEBUG = $true;
 
-if (test-path "$PSScriptRoot\RuntimeHosts") {
-	Get-ChildItem -Path "$PSScriptRoot\RuntimeHosts" | %{ $_.Delete(); }
+$tempPath = [System.IO.Path]::Combine($targetPath,"RuntimeHosts");
+if (test-path $tempPath) {
+	Get-ChildItem -Path $tempPath | %{ $_.Delete(); }
 } else {
-	New-Item -Path "$PSScriptRoot\RuntimeHosts" -ItemType Directory | out-null
+	New-Item -Path $tempPath -ItemType Directory | out-null;
 }
 
-if (test-path "$PSScriptRoot\RuntimeTemplates") {
-	Get-ChildItem -Path "$PSScriptRoot\RuntimeTemplates" | %{ $_.Delete(); }
+$tempPath = [System.IO.Path]::Combine($targetPath,"RuntimeTemplates");
+if (test-path $tempPath) {
+	Get-ChildItem -Path $tempPath | %{ $_.Delete(); }
 } else {
-	New-Item -Path "$PSScriptRoot\RuntimeTemplates" -ItemType Directory | out-null
+	New-Item -Path $tempPath -ItemType Directory | out-null
 }
 
 $hostGroups = New-Object "System.Collections.Generic.Dictionary[string,[System.Collections.Generic.List[object]]]";
@@ -29,38 +45,47 @@ $templates = New-Object "System.Collections.Generic.List[object]";
 # STEP 1. TEMPLATES. SCAN.
 Write-Host "Search for templates. Begin..." -ForegroundColor Black -BackgroundColor Green;
 
-if ((test-path "$PSScriptRoot\Templates") -eq $false) {
-	New-Item -Path "$PSScriptRoot\Templates" -ItemType Directory | out-null
+if ($targetPath -ne $PSScriptRoot) {
+    $tempPath = [System.IO.Path]::Combine($PSScriptRoot,"Templates");
+    if ((test-path $tempPath) -eq $false) {
+	    New-Item -Path $tempPath -ItemType Directory | out-null
+    }
 }
-Set-Location .\Templates;
 
-Write-Host "Search for templates. Template: " (Get-Location).ToString();
+$tempPath = [System.IO.Path]::Combine($targetPath,"Templates");
+if ((test-path $tempPath) -eq $false) {
+	New-Item -Path $tempPath -ItemType Directory | out-null
+}
+Set-Location $tempPath;
 
-$templatesCatalog = Get-ChildItem -Directory | ?{$_.Name[0] -ne "#"};
+Write-Host "Search for templates. Catalog: " (Get-Location).ToString();
 
-Write-Host ("Search for templates. End. " + $templatesCatalog.Length.ToString() + " templates...");
+if ($targetPath -eq $PSScriptRoot) {
+    $templatesCatalog = Get-ChildItem -Directory | ?{$_.Name[0] -ne "#"};
+} else {
+    $templatesCatalog = (Get-ChildItem -Path ([System.IO.Path]::Combine($PSScriptRoot,"Templates")) -Directory | Where-Object{$_.Name[0] -ne "#"}) + (Get-ChildItem -Directory | ?{$_.Name[0] -ne "#"});
+}
 
 # STEP 2. TEMPLATES. PARSE.
 foreach ($template in $templatesCatalog) {
 
-    if ($template.BaseName[0] -eq '#') {
-        continue;
-    }
+    if ($template.BaseName[0] -eq '#') { continue; }
 
     $script = ParseTemplateCatalog $template.FullName; 
 
-    try {
+    try { # testing scripts
         Invoke-Expression -Command $script.body;
     } catch {
-        Write-Host -Object ($script.body)
+        Write-Output ($script.body)
+        Write-Output "";
         $_
     }
 
-    [string]$path = $PSScriptRoot + "\RuntimeTemplates\" + $template.BaseName + ".psm1";
+    [string]$runtimePath = [System.IO.Path]::Combine($targetPath,"RuntimeTemplates",$template.BaseName+".psm1");
 
-    $usingModulesString = "using module $PSScriptRoot\CoreLibrary.psm1;`r`n";
+    $usingModulesString = "using module $PSScriptRoot\CoreLibrary.psm1;$([System.Environment]::NewLine)";
 
-    SetContent $path ($usingModulesString + $script.body);
+    SetContent $runtimePath ($usingModulesString + $script.body);
 
     $templates.Add(
     @{
@@ -69,45 +94,47 @@ foreach ($template in $templatesCatalog) {
     });
 }
 
+Write-Host ("Search for templates. End. Templates: " + $templatesCatalog.Length.ToString());
 
 # STEP 3. HOSTS GROUPS. SCAN.
 Write-Host "Search for hosts groups. Begin..." -ForegroundColor Black -BackgroundColor Green;
 
-if ((test-path "$PSScriptRoot\HostGroups") -eq $false) {
-	New-Item -Path "$PSScriptRoot\HostGroups" -ItemType Directory | out-null
+$tempPath = [System.IO.Path]::Combine($targetPath,"HostGroups");
+if ((test-path $tempPath) -eq $false) {
+	New-Item -Path $tempPath -ItemType Directory | out-null
 }
-Set-Location ($PSScriptRoot + "\HostGroups");
+Set-Location $tempPath;
 
-Write-Host "Search for hosts groups. Group: " (Get-Location).ToString();
+Write-Host "Search for hosts groups. Catalog: " (Get-Location).ToString();
 
 $hostGroupCatalogs = Get-ChildItem -Directory | ?{$_.Name[0] -ne "#"};
-
-Write-Host ("Search for hosts groups. End. " + $hostGroupCatalogs.Length.ToString() + " groups...");
 
 # STEP 4. HOSTS GROUPS. PARSE.
 foreach ($hostGroupCatalog in $hostGroupCatalogs) {
 
-    if ($hostGroupCatalog.BaseName[0] -eq '#') {
-        continue;
-    }
+    if ($hostGroupCatalog.BaseName[0] -eq '#') { continue; }
 
     Write-Host ("Processing host groups... " + $hostGroupCatalog.ToString());
 
     $llds = new-object 'System.Collections.Generic.List[object]';
-    if (test-path "$($hostGroupCatalog.FullName)\LLDs") {
-        $lldsDirs = Get-ChildItem -Path ("$($hostGroupCatalog.FullName)\LLDs") -Directory;
+    if (test-path ([System.IO.Path]::Combine($hostGroupCatalog.FullName,"lld"))) {
+        $lldsDirs = Get-ChildItem -Path ([System.IO.Path]::Combine($hostGroupCatalog.FullName,"lld")) -Directory;
         foreach ($lldDir in $lldsDirs) {
             $llds.Add((ParseLLDCatalog -path $lldDir.FullName));
         }
     }
 
-    $hostsListFile = Get-ChildItem -Path $hostGroupCatalog -File -Filter "hosts.txt";
+    $hostsListFile = Get-ChildItem -Path $hostGroupCatalog -File -Filter "hosts";
     if ($hostsListFile.Count -eq 0) { continue; }
     $hostsList = GetContent $hostsListFile.FullName;
+    $hostsList = $hostsList.Split([Environment]::NewLine,[System.StringSplitOptions]::RemoveEmptyEntries);
 
-    $templatesListFile = Get-ChildItem -Path $hostGroupCatalog -File -Filter "templates.txt";
+    $templatesListFile = Get-ChildItem -Path $hostGroupCatalog -File -Filter "templates";
     if ($templatesListFile.Count -eq 0) { $templatesList = $null; }
-    else { $templatesList = GetContent $templatesListFile.FullName; }
+    else {
+        $templatesList = GetContent $templatesListFile.FullName; 
+        $templatesList = $templatesList.Split([Environment]::NewLine,[System.StringSplitOptions]::RemoveEmptyEntries);
+    }
 
     foreach ($hostName in $hostsList){    
         $hostName = $hostName.ToLower();
@@ -122,6 +149,7 @@ foreach ($hostGroupCatalog in $hostGroupCatalogs) {
         foreach($template in $templatesList) {
             $template = $template.Trim();
             if ( ($templates | where { $_.TemplateName -eq $template }) -eq $null ) {
+		write-host "error template $template" -ForegroundColor Red;
                 continue; #if not exitst
             }
             if ($template -ne [string]::Empty -and $hostGroups[$hostName][0].Contains($template) -eq $false) {
@@ -131,10 +159,18 @@ foreach ($hostGroupCatalog in $hostGroupCatalogs) {
     }
 }
 
-# Сформировать перечень хостов и их составов
+Write-Host ("Search for hosts groups. End. " + $hostGroupCatalogs.Length.ToString() + " groups...");
+
+# ������������ �������� ������ � �� ��������
 Write-Host "Hosts scan. Begin..." -ForegroundColor Black -BackgroundColor Green;
 
-Set-Location ($PSScriptRoot + "\Hosts");
+$tempPath = [System.IO.Path]::Combine($targetPath,"Hosts");
+
+if ((test-path $tempPath) -eq $false) {
+	New-Item -Path $tempPath -ItemType Directory | out-null
+}
+
+Set-Location $tempPath;
 
 Write-Host ("Hosts scan. Catalog: " + (Get-Location).ToString());
 
@@ -172,10 +208,9 @@ foreach ($remoteHost in $hostCatalogs) {
             if ($script.Templates.Contains($template) -eq $false) {
                 $script.Templates.Add($template);
             }
-            $templateGroupBody += ("`$this.templates.Add([" + $template + "]::new(`$this));`r`n`t");
+            $templateGroupBody += ("`$this.templates.Add(`$this.templates.Count, [" + $template + "]::new(`$this));`r`n`t");
         }
 
-        #$templateGroupBody += $hostGroups[$hostName.ToLower()][1].Replace("<hostName>",$hostName);
         $llds = $hostGroups[$hostName.ToLower()][1];
         foreach ($lld in $llds) {
             $metrics = $null;
@@ -187,32 +222,31 @@ foreach ($remoteHost in $hostCatalogs) {
             }
             $lldTemplateScript = $lld.GenerateByMetrics($metrics);
             $additionalText += $lldTemplateScript + [System.Environment]::NewLine;
-            $templateGroupBody += ("`$this.templates.Add([" + $lld.ClassName + "]::new(`$this));`r`n`t");
-                
+            $templateGroupBody += ("`$this.templates.Add(`$this.templates.Count,[" + $lld.ClassName + "]::new(`$this));`r`n`t");
         }
 
         $script.Body = $script.Body.Replace("<templateGroupBody>",$templateGroupBody);
     }
     else { $script.body = $script.Body.Replace("<templateGroupBody>","");  }
 
-    [string]$path = $PSScriptRoot + "\RuntimeHosts\" + $hostName + ".psm1";
+    [string]$runtimePath = [System.IO.Path]::Combine($targetPath,"RuntimeHosts",$script.className + ".psm1");
     
-    $usingModulesString = "using module $PSScriptRoot\CoreLibrary.psm1;`r`n";
+    $usingModulesString = "using module $PSScriptRoot\CoreLibrary.psm1;$([System.Environment]::NewLine)";
 
     foreach ($el in $script.Templates) {
-        $usingModulesString += "using module $PSScriptRoot\RuntimeTemplates\$el.psm1;`r`n";
+        $usingModulesString += "using module $targetPath\RuntimeTemplates\$el.psm1;$([System.Environment]::NewLine)";
     }
 
     $script.body = $usingModulesString + $additionalText + $script.body;
 
-    try {
+    try { #testing scripts
         Invoke-Expression -Command $script.body;
     } catch {
         Write-Host -Object ($script.body)
         $_
     }
 
-    SetContent $path $script.body;
+    SetContent $runtimePath $script.body;
 
     $hosts.Add(
     @{

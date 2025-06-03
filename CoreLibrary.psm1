@@ -1,31 +1,28 @@
-$encoding_main = [Microsoft.PowerShell.Commands.FileSystemCmdletProviderEncoding]::UTF8;
+﻿$encoding_main = [Microsoft.PowerShell.Commands.FileSystemCmdletProviderEncoding]::UTF8;
 
 
 Enum ConnectionType { NONE;IP;DNS }
 enum GeneratorBlock { EMPTY;TEMPLATE;DEFINE;INIT;UPDATE;GENERATOR }
 enum ObjectType {HOST; TEMPLATE}
 enum Invokation {REMOTE; LOCAL}
-enum RemoteTool {PS; SSH}
+enum RemoteTool {PS; SH}
 
-class MetaModel
-{
+class MetaModel {
     [ObjectType]$objectType;
     [string]$className;
-    [object]$tag;
     [System.Collections.Generic.Dictionary[string,int]]$variables;
     [System.Collections.Generic.List[string]]$Templates;
     [System.Collections.Generic.List[LLDInfo]]$llds;
     [string]$body;
 
-    MetaModel()
-    {
+    MetaModel() {
         $this.variables = [System.Collections.Generic.Dictionary[string,int]]::new();
         $this.Templates = [System.Collections.Generic.List[string]]::new();
+        $this.llds = [System.Collections.Generic.List[LLDInfo]]::new();
     }
 }
 
-class LLDInfo
-{
+class LLDInfo {
     [HostBase]$hostRef;
     [string]$hostName;
     [string]$className;
@@ -37,8 +34,7 @@ class LLDInfo
     [System.Collections.Generic.Dictionary[string,System.Array]]$triggers;
     [Invokation] $invokation;
 
-    LLDInfo()
-    {
+    LLDInfo() {
         $this.defines = [System.Collections.Generic.Dictionary[string,object]]::new();
         $this.inits = [System.Collections.Generic.Dictionary[string,object]]::new();
         $this.updates = [System.Collections.Generic.Dictionary[string,object]]::new();
@@ -162,24 +158,50 @@ class <className> : TemplateBase {
     }
 }
 
-class TriggerInfo
-{
-    [string]$Host;
-    [string]$Template;
-    [string]$Item;
+class TriggerInfo {
+    [string]$Host; [string]$Template; [string]$Item;
+    [datetime] $CheckTimestamp;
     [bool]$Status;
-    [scriptblock] $Script;
-    [scriptblock] $DescriptionScript;
+    [scriptblock] $Script; [scriptblock] $DescriptionScript;
     [string] $Description; # buffer for $DescriptionScript's result
 
-    [void]Check([object]$node){
-        $this.Status = ($this.Script.Invoke($node) -eq $true);
-        $this.Description = $this.DescriptionScript.Invoke($node);
+    TriggerInfo(){
+        $this.CheckTimestamp = [datetime]::MinValue;
+        $this.Status = $false;
+    }
+
+    [void]Check([HostBase]$node) {
+        $this.Status = ($this.Script.InvokeReturnAsIs($node) -eq $true);
+        $this.Description = $this.DescriptionScript.InvokeReturnAsIs($node);
+        $this.CheckTimestamp = [datetime]::Now;
+    }
+}
+
+class UpdateScript {
+	[string]$TemplateName; 
+    [string]$ElementName;
+	[string]$Script;
+    [RemoteTool] $RemoteTool;
+    [bool]$IsLocal;
+    [object]$CurrentValue;
+	[datetime]$UpdateTimestamp;
+    [timespan]$UpdateDelta;	    
+
+    UpdateScript() {
+        $this.TemplateName = [string]::Empty;
+        $this.ElementName = [string]::Empty;
+        $this.Script = [string]::Empty;
+        $this.RemoteTool = [RemoteTool]::PS;
+        $this.IsLocal = $false;
+        $this.CurrentValue = $null;
+        $this.UpdateTimestamp = [datetime]::MinValue;
+        $this.UpdateDelta = [timespan]::Zero;
     }
 }
 
 class HostBase
 {
+    [datetime]$UpdateTimestamp;
 	[timespan]$UpdateDelta;
     [timespan]$UpdateDeltaTemplates;
 	[timespan]$UpdateDeltaTotal;
@@ -189,24 +211,19 @@ class HostBase
     [object]$ping;
     [string]$hostName;
 	[string]$address;
-    [System.Collections.Generic.List[TemplateBase]]$templates;
-    [System.Collections.Generic.List[UpdateScript]]$updateScripts;
+    [System.Collections.Generic.Dictionary[int,TemplateBase]]$templates;
+    [System.Collections.Generic.Dictionary[int,UpdateScript]]$updateScripts;
     [System.Collections.Generic.List[TriggerInfo]]$triggers;
     [System.Collections.Generic.List[LLDInfo]]$llds;
-    [System.Collections.ArrayList]$us;
     [object]$checked;
 
     HostBase([string]$hostN,[string]$address) {
         $this.hostName = $hostN;
 	    $this.address = $address;
-        $this.templates = [System.Collections.Generic.List[TemplateBase]]::new();
-        $this.updateScripts = [System.Collections.Generic.List[UpdateScript]]::new();
+        $this.templates = [System.Collections.Generic.Dictionary[int,TemplateBase]]::new();
+        $this.updateScripts = [System.Collections.Generic.Dictionary[int,UpdateScript]]::new();
         $this.triggers = [System.Collections.Generic.List[TriggerInfo]]::new();
         $this.llds =  [System.Collections.Generic.List[LLDInfo]]::new();
-    }
-
-    [string]ConnectionAddress() {
-        return $this.address;
     }
 
     [System.Array]GetUpdateScripts()
@@ -214,7 +231,7 @@ class HostBase
         return @($this.updateScripts);
     }
 
-    [void]CheckHost() {
+    [void]CheckHostName() {
         try {
 		    if ($this.connectionType -eq [connectionType]::DNS) {
 			    $this.FQDN = [System.Net.Dns]::GetHostByName($this.address).Hostname;
@@ -226,150 +243,167 @@ class HostBase
         } catch { }
     }
 
-    # Формирование скриптов для выполнения на стороне хоста
-    [void]InitializeData([string[]]$tFilter = $null,[string[]]$tiFilter = $null) {    
-         
-        $this.CheckPing();
-        $this.CheckHost();
-
-        $this.us = [System.Collections.ArrayList]::new();
-
-        [void]$this.us.Add( # Скрипты данного хоста
-            @{
-                id = -1;
-                updates = $this.GetUpdateScripts();
-                updateDelta = [timespan]::Zero;
-            }
-        );
-
-        # Filtering
-        if ($tFilter -ne $null) { #inlcude
-            for ($i = 0; $i -lt $this.templates.Count; ++$i)  {
-                $toRemove = $true;
-                if ($tFilter -contains $this.templates[$i].templateName) {
-                        $toRemove = $false;
-                   }
-                
-                if ($toRemove) {
-                    $this.templates.RemoveAt($i);
-                    $i--;
-                }
-            
-            }
-        }
-        if ($tiFilter -ne $null) { #exclude
-            for ($i = 0; $i -lt $this.templates.Count; ++$i)  {
-                $toRemove = $false;
-                if ($tiFilter -contains $this.templates[$i].templateName) {
-                    $toRemove = $true;
-                }
-                
-                if ($toRemove) {
-                    $this.templates.RemoveAt($i);
-                    $i--;
-                }            
-            }
-        }
-
-        # Скрипты вложенных шаблонов
-        for ($i = 0; $i -lt $this.templates.Count; ++$i) {
-            [void]$this.us.Add(
-                @{ 
-                    id = $i;
-                    updates = $this.templates[$i].GetUpdateScripts();
-                    updateDelta = [timespan]::Zero;
-                }
-            );
-        }
-    }
-
     [void]CheckPing() {
         $this.ping = (Test-Connection -ComputerName ($this.address) -Count 1 -ErrorAction SilentlyContinue).ResponseTime;
     }
 
     [void]Update()  
     {
+        $sw = New-Object System.Diagnostics.Stopwatch;
+
+        $this.UpdateTimestamp = [datetime]::Now;
         $this.UpdateDeltaTotal = [timespan]::Zero;
         $this.UpdateDeltaTemplates = [timespan]::Zero;
 
         $this.CheckPing();
+        $this.CheckHostName();
 
         if ($this.ping -eq $null) {return;}
 
-        $invokedScript = {
-            param([object]$us)
-            $ProgressPreference = "SilentlyContinue"
-            $UpdateScripts = $us.us;
-            $UpdateScriptsCount = $UpdateScripts.Count;           
-            $ssw = New-Object 'System.Diagnostics.Stopwatch';
-            for ($i = 0; $i -lt $UpdateScriptsCount; ++$i) {
-                $UpdateScript = $UpdateScripts[$i];
-                $updates = $UpdateScript.updates;
-                $scriptsCount = $updates.Count;                
-                $ssw.Reset();
-                $ssw.Start();
-                for ($j = 0; $j -lt $scriptsCount; ++$j) {
-                    $update = $updates[$j];         
+        # подготовка
+         $scriptBlock = {
+            param([array]$us)
+            $ProgressPreference = "SilentlyContinue";        
+            $sw = New-Object 'System.Diagnostics.Stopwatch';
+            $us | %{
+                    $update = $_.Value;
+                    $sw.Reset();
+                    $sw.Start();
                     # Invoke-Expression makes an irrational shit. Don't use it.	
-                    $update.CurrentValue = [scriptblock]::Create('try { ' + $update.Script + ' } catch { $_.Exception.Message + $_.InvocationInfo.PositionMessage  }').InvokeReturnAsIs($null);
+                    $update.CurrentValue = [scriptblock]::Create('try { ' + $update.Script + ' } catch { $_.Exception.Message + [System.Environment]::NewLine + $_.InvocationInfo.PositionMessage  }').InvokeReturnAsIs($null);
+                    $update.UpdateDelta = $sw.Elapsed;
                     $update.UpdateTimestamp = [datetime]::Now;
                 }
-                $ssw.Stop();
-                $UpdateScript.updateDelta = $ssw.Elapsed;
-            }
-            return $UpdateScripts;            
+            $sw.Stop();
+            $sw = $null;
+            return @(,$us);            
         };
+
+        $sessionOptions = New-PSSessionOption -NoMachineProfile -IdleTimeout 300000;         
         
-        $sessionOptions = New-PSSessionOption -NoCompression -NoMachineProfile -IdleTimeout 300000; 
+        $remoteMetrics = @(,($this.updateScripts.GetEnumerator()|?{$_.Value.IsLocal -eq $false -and $_.Value.RemoteTool -eq [RemoteTool]::PS}|Select-Object *));
+        if (!($remoteMetrics.Count -eq 1 -and $null -eq $remoteMetrics[0])) {
 
-        if ($this.connectionType -eq [ConnectionType]::DNS) {
-            $uss = Invoke-Command ($this.address) -SessionOption $sessionOptions -ScriptBlock $invokedScript -ArgumentList @{us=$this.us};
-        } else {
-            $uss = Invoke-Command ($this.address) -Authentication Negotiate -SessionOption $sessionOptions -ScriptBlock $invokedScript -ArgumentList @{us=$this.us};
-        }
-
-        if ($uss -eq $null) { return; }
-
-        
-        # Process updates of host
-        if ($uss -is [array]){
-            $this.us = $uss;
-            $updateScript = $this.us[0].updates;
-            if ($this.us[0].updateDelta -ne $null) {
-                $this.UpdateDeltaTotal += $this.UpdateDelta = $this.us[0].updateDelta;
+            if ($this.connectionType -eq [ConnectionType]::DNS) {
+                $session = New-PSSession ($this.address) -SessionOption $sessionOptions;
+            } else {
+                $session = New-PSSession ($this.address) -Authentication Negotiate -SessionOption $sessionOptions;
             }
-        }
-        else {              
-            $updateScript = $uss.updates;
-            if ($uss.updateDelta -ne $null) {
-                $this.UpdateDeltaTotal = $this.UpdateDelta = $uss.updateDelta;
+
+            # подготовка удаленных метрик хоста
+            $updateScriptsInvoked = Invoke-Command -Session $session -ScriptBlock $scriptBlock -ArgumentList $remoteMetrics;       
+            if ($null -eq $updateScriptsInvoked) { return; }
+            if ($updateScriptsInvoked -is [System.Collections.IEnumerable]) {
+                $updateScriptsInvoked | % { $this.ProcessUpdated($_.Key, $_.Value); }
             }
-        }
-        for ($j = 0; $j -lt $updateScript.Count; ++$j) {
-            $this.updateScripts[$j].CurrentValue = $updateScript[$j].CurrentValue;
-            $this.updateScripts[$j].UpdateTimestamp = $updateScript[$j].UpdateTimestamp;
-        }
+            else { $this.ProcessUpdated($updateScriptsInvoked.Key, $updateScriptsInvoked.Value); }
 
+            Remove-PSSession $session;
+        }
+         
+        # обработка локальных метрик хоста
+        $this.updateScripts.GetEnumerator()|?{$_.Value.IsLocal -eq $true -and $_.Value.RemoteTool -eq [RemoteTool]::PS}|ForEach-Object{
+            $updateScript = $_.Value;
+            $sw.Restart();
+            try { 
+                $updateScript.CurrentValue = [scriptblock]::Create($updateScript.Script).InvokeReturnAsIs($null); 
+            } catch { 
+                $updateScript.CurrentValue = $_.Exception.Message + [System.Environment]::NewLine + $_.InvocationInfo.PositionMessage  
+            }
+            $sw.Stop();
+            $updateScript.UpdateDelta = $sw.Elapsed;
+            $updateScript.UpdateTimestamp = [datetime]::Now;            
+            $this.UpdateDelta += $sw.Elapsed;            
+        } 
         
-        # Process updates of templates
-        if ($this.us -is [array]) {
-            for ($i = 1; $i -lt $this.us.Count; ++$i) 
-            {
-                $updateData = $this.us[$i];
-                $this.UpdateDeltaTemplates += $updateData.updateDelta;
-
-                $template = $this.templates[$updateData.id];
-                $template.UpdateDelta = $updateData.updateDelta;      
-                
-                for ([int]$j = 0; $j -lt $updateData.updates.Count; ++$j) {
-                    $template.updateScripts[$j].CurrentValue = $updateData.updates[$j].CurrentValue;
-                    $template.updateScripts[$j].UpdateTimestamp = $updateData.updates[$j].UpdateTimestamp;
-
+        # обработка метрик хоста по ssh
+        $u = whoami;
+        $a = $this.address;
+        $this.updateScripts.GetEnumerator() |`
+            Where-Object {$_.Value.RemoteTool -eq [RemoteTool]::SH} |`
+            ForEach-Object {
+                $updateScript = $_.Value;
+                $sw.Restart();
+                if ($_.Value.IsLocal -eq $false) {
+                    $updateScript.CurrentValue = ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=2 $u@$a -o ServerAliveInterval=1 -o ServerAliveCountMax=2 "$($updateScript.Script)" 2>&1;
                 }
-            }
+                else { $updateScript.CurrentValue = & $updateScript.Script 2>&1; }
+                $sw.Stop();
+                $updateScript.UpdateDelta = $sw.Elapsed;
+                $updateScript.UpdateTimestamp = [datetime]::Now;            
+                $this.UpdateDelta += $sw.Elapsed;            
+            };       
+        
+        $this.UpdateDeltaTotal += $this.UpdateDelta;
 
-            $this.UpdateDeltaTotal += $this.UpdateDeltaTemplates;
-        }              
+        # обработка метрик шаблонов
+        $this.templates.GetEnumerator() | ForEach-Object {
+            $template = $_.Value;
+
+            $remoteMetrics = @(,($template.updateScripts.GetEnumerator()|?{$_.Value.IsLocal -eq $false -and $_.Value.RemoteTool -eq [RemoteTool]::PS}|Select-Object *));
+            if (!($remoteMetrics.Count -eq 1 -and $null -eq $remoteMetrics[0])) {
+
+                if ($this.connectionType -eq [ConnectionType]::DNS) {
+                    $session = New-PSSession ($this.address) -SessionOption $sessionOptions;
+                } else {
+                    $session = New-PSSession ($this.address) -Authentication Negotiate -SessionOption $sessionOptions;
+                }
+
+                $updateScriptsInvoked = Invoke-Command -Session $session -ScriptBlock $scriptBlock -ArgumentList $remoteMetrics;       
+                if ($null -eq $updateScriptsInvoked) { return; }
+                    if ($updateScriptsInvoked -is [System.Collections.IEnumerable]) { 
+                        $updateScriptsInvoked | % { $template.ProcessUpdated($_.Key, $_.Value); }
+                    }
+                    else { $template.ProcessUpdated($updateScriptsInvoked.Key, $updateScriptsInvoked.Value); }     
+                    
+                Remove-PSSession $session;
+            }
+                
+            $template.updateScripts.GetEnumerator()|`
+                Where-Object{$_.Value.IsLocal -eq $true -and $_.Value.RemoteTool -eq [RemoteTool]::PS}|`
+                ForEach-Object{
+                    $updateScript = $_.Value;
+                    $sw.Restart();
+                    try { 
+                        $updateScript.CurrentValue = [scriptblock]::Create($updateScript.Script).InvokeReturnAsIs($null); 
+                    } catch { 
+                        $updateScript.CurrentValue = $_.Exception.Message + [System.Environment]::NewLine + $_.InvocationInfo.PositionMessage  
+                    }
+                    $updateScript.UpdateDelta = $sw.Elapsed;
+                    $updateScript.UpdateTimestamp = [datetime]::Now;            
+                    $template.UpdateDelta += $sw.Elapsed;            
+                }            
+            $this.UpdateDeltaTemplates += $template.UpdateDelta;
+
+            # обработка метрик шаблона по ssh
+            $u = whoami;
+            $template.updateScripts.GetEnumerator() |`
+                Where-Object {$_.Value.RemoteTool -eq [RemoteTool]::SH} |`
+                ForEach-Object {
+                    $updateScript = $_.Value;
+                    $sw.Restart();
+                    if ($_.Value.IsLocal -eq $false) {
+                        $updateScript.CurrentValue = ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=2 $u@$a -o ServerAliveInterval=1 -o ServerAliveCountMax=2 "$($updateScript.Script)" 2>&1;
+                    }
+                    else { $updateScript.CurrentValue = & $updateScript.Script 2>&1; }
+                    $sw.Stop();
+                    $updateScript.UpdateDelta = $sw.Elapsed;
+                    $updateScript.UpdateTimestamp = [datetime]::Now;            
+                    $template.UpdateDelta += $sw.Elapsed;            
+                };   
+                
+                $this.UpdateDeltaTemplates += $template.UpdateDelta;
+        }
+
+        $this.UpdateDeltaTotal += $this.UpdateDeltaTemplates;
+    }
+
+    [void]ProcessUpdated([int]$id,[object]$updated) {
+        $updateScript = $this.updateScripts[$id];
+        $updateScript.CurrentValue = $updated.CurrentValue;
+        $updateScript.UpdateTimestamp = $updated.UpdateTimestamp;
+        $updateScript.UpdateDelta = $updated.UpdateDelta;
+        $this.UpdateDelta += $updated.UpdateDelta
     }
 
     [void]Check()
@@ -380,8 +414,9 @@ class HostBase
         $pingTrigger.Host = $this.hostName;
         $pingTrigger.Template = '';
         $pingTrigger.Item = "ping";
-        $pingTrigger.Description = {return "PING FAIL! " + $args[0].hostName.ToString()}.Invoke($this);
+        $pingTrigger.Description = "PING FAIL! $($this.hostName.ToString())";
         $pingTrigger.Status = ($this.ping -eq $null);
+        $pingTrigger.CheckTimestamp = [datetime]::Now;
   
         $this.Checked.Add($pingTrigger);
 
@@ -408,25 +443,29 @@ class TemplateBase
 	[timespan]$UpdateDelta;
     [string]$templateName;
     [HostBase]$hostRef;
-    [System.Collections.Generic.List[UpdateScript]]$updateScripts;
+    [System.Collections.Generic.Dictionary[int,UpdateScript]]$updateScripts;
     [System.Collections.Generic.List[TriggerInfo]]$triggers;
 
     TemplateBase([HostBase]$hostReference)
     {
         $this.hostRef = $hostReference;
         $this.templateName = $this.GetType().Name;
-        $this.updateScripts = [System.Collections.Generic.List[UpdateScript]]::new();
+        $this.updateScripts = [System.Collections.Generic.Dictionary[int,UpdateScript]]::new();
         $this.triggers = [System.Collections.Generic.List[TriggerInfo]]::new();
+        $this.UpdateDelta = [timespan]::Zero;
     }
 
-    [void]Update()
-    {
-
+    [void]ProcessUpdated([int]$id,[object]$updated) {
+        $updateScript = $this.updateScripts[$id];
+        $updateScript.CurrentValue = $updated.CurrentValue;
+        $updateScript.UpdateTimestamp = $updated.UpdateTimestamp;
+        $updateScript.UpdateDelta = $updated.UpdateDelta;
+        $this.UpdateDelta += $updated.UpdateDelta
     }
 
-    [System.Array]GetUpdateScripts()
+    [System.Collections.Generic.Dictionary[int,UpdateScript]]GetUpdateScripts()
     {
-        return @($this.updateScripts);
+        return $this.updateScripts;
     }
 
     [TriggerInfo[]]GetTriggers()
@@ -440,17 +479,6 @@ class TemplateBase
     }
 }
 
-class UpdateScript {
-	[string]$TemplateName;
-	[string]$ElementName;
-	[object]$CurrentValue;
-	[string]$Script;
-	[datetime]$UpdateTimestamp;
-	[bool]$IsLocal;
-
-    UpdateScript() { }
-}
-
 function GetContent([string]$fileName) {
     return Get-Content -Path $fileName -Encoding $encoding_main -Raw;
 }
@@ -459,12 +487,16 @@ function SetContent([string]$fileName, [string]$text) {
 }
 
 function ParseUpdatesCatalog([MetaModel]$info,[string]$className,[string]$path) {
-    $updates = Get-ChildItem -Path $path -File -Filter "*.ps1";
+    $updates = Get-ChildItem -Path $path -File | Where-Object { $_.Name -like "*.ps1" -or $_.Name -like "*.sh"  };
     $id = 0;
     $initBody = '';
     for ($i = 0; $i -ne $updates.Count; ++$i) {
         $updateFile = $updates[$i];
         if ($updateFile.BaseName[0] -eq '#') {continue;}
+
+        $updateFileFormat = $updateFile.Extension.ToLower();
+        if ($updateFileFormat -eq ".ps1") {$updateFileFormat = [RemoteTool]::PS;}
+        elseif ($updateFileFormat -eq ".sh") {$updateFileFormat = [RemoteTool]::SH;}
 
 	    $updateFileParts = $updateFile.BaseName.Split(" ");
 		
@@ -475,12 +507,14 @@ function ParseUpdatesCatalog([MetaModel]$info,[string]$className,[string]$path) 
         $initBody += @"
 `$updateScript = [UpdateScript]::new();
 `$updateScript.TemplateName = `"$className`";
-`$updateScript.ElementName = `"$($updateFile.BaseName)`";
+`$updateScript.ElementName = `"$($updateFileParts[0])`";
 `$updateScript.CurrentValue = `$null;
-`$updateScript.Script = {$scriptText};
+`$updateScript.Script = '$($scriptText.Replace("'","''"))';
 `$updateScript.UpdateTimestamp = [datetime]::MinValue;
-`$updateScript.IsLocal = `$$isLocal
-`$this.updateScripts.Add(`$updateScript);
+`$updateScript.IsLocal = `$$isLocal;
+`$updateScript.RemoteTool = [RemoteTool]::$updateFileFormat;
+`$this.updateScripts.Add($id,`$updateScript);
+
 "@;
         $info.variables.Add($updateFile.BaseName, $id);
         ++$id;
@@ -496,24 +530,41 @@ function ParseTriggersCatalog([MetaModel]$info,[string]$path) {
         $hostNameStr = '$($this.HostRef.HostName)';
     }
     elseif ($info.objectType -eq [ObjectType]::HOST) {
-        $hostNameStr = $info.className;
+        #$hostNameStr = $info.className;
+        $hostNameStr = '$($this.HostName)';
     }
     for ($i = 0; $i -ne $triggers.Count; ++$i) {
         if ($triggers[$i].BaseName[0] -eq '#') {continue;}
 
         $triggerCatalog = $triggers[$i];
+        
         $triggerItemName = $triggerCatalog.BaseName.trim(); 
+
         if ($triggerItemName[0] -eq '#') { continue; }
+
         if ((Test-Path -Path ($triggerCatalog.Fullname + "\check.ps1")) -eq $false) { continue; } 
+
         $triggerScript = GetContent ($triggerCatalog.Fullname + "\check.ps1");
+
         $triggerDescription = $triggerItemName + "!";
         if ((Test-Path -Path ($triggerCatalog.Fullname + "\message.ps1")) -eq $true) {
             $triggerDescription = GetContent ($triggerCatalog.Fullname + "\message.ps1");
         }
+
         $s = ($triggerScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | select value;
-        foreach ($el in $s) { $el = $el.Value; $triggerScript = ($triggerScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $info.variables[$el.Replace("`$this.","")] + "].CurrentValue"));  }   
+        foreach ($el in $s) { 
+            $el = $el.Value; 
+            $triggerScript = ($triggerScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $info.variables[$el.Replace("`$this.","")] + "].CurrentValue"));
+        }   
+
         $s = ($triggerDescription | Select-String -AllMatches -pattern '\$this.\w*').Matches | select value;
-        foreach ($el in $s) { $el = $el.Value; $triggerDescription = ($triggerDescription.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $info.variables[$el.Replace("`$this.","")] + "].CurrentValue"));  }      
+        foreach ($el in $s) {
+            $el = $el.Value; 
+            $triggerDescription = ($triggerDescription.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $info.variables[$el.Replace("`$this.","")] + "].CurrentValue"));
+        }  
+        
+        $triggerDescription = $triggerDescription.Replace('"','`"');    
+
         $initBody += @"
 `$triggerInfo = [TriggerInfo]::new();
 `$triggerInfo.Script = {$triggerScript};
@@ -602,6 +653,7 @@ function ParseHostCatalog ([string] $path) {
     }
 
     $className = $hostName;
+    $className = $className -replace "[!@#`$%^&-]","_";
 
     [MetaModel] $hostInfo = [MetaModel]::new();
     $hostInfo.className = $className;
@@ -611,7 +663,7 @@ function ParseHostCatalog ([string] $path) {
 <additionalText>
 class <className> : HostBase {
     <defineBody>
-`t" + $className + "() : base('$className','$hostAddress') {
+`t" + $className + "() : base('$hostName','$hostAddress') {
         <initBody>
         <templateBody>
         <templateGroupBody>
@@ -643,7 +695,7 @@ class <className> : HostBase {
         $rows = GetContent ($path + "\templates");
         foreach($row in $rows) {
             if ($row -eq "" -or $row[0] -eq "#") { continue; }
-            $templateBody += ("`$this.templates.Add([" + $row.Trim() + "]::new(`$this));`r`n");
+            $templateBody += ("`$this.templates.Add(`$this.templates.Count,[" + $row.Trim() + "]::new(`$this));`r`n");
             $hostInfo.Templates.Add($row.Trim());
         }
     }
@@ -659,7 +711,6 @@ class <className> : HostBase {
             if ($lld.Basename[0] -eq '#') { continue; }
             
             $lldInfo = ParseLLDCatalog($path + "\llds\" + $lld.Name);
-            #$initBody += $lldInfo.body.Replace("<hostName>",$className);
 
             $metrics = $null;
             if ($lldInfo.invokation -eq [Invokation]::REMOTE) {                    
