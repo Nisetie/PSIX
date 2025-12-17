@@ -112,6 +112,7 @@ $forCSSGoodStatus = 'class ="GoodStatus"';
 
 $newTriggersCount = 0;
 $okTriggers = 0;
+$badTriggers = 0;
 
 foreach ($trigger in $triggers) {
 
@@ -149,6 +150,8 @@ foreach ($trigger in $triggers) {
 		}
 	}
 
+    if ($data.Status -eq $true) { $badTriggers++; }
+
 	if ($data.Status -eq $true -or ($data.Status -eq $False -and $data.OkTimestamp -ne $null)) { 
         
         [void]$oldTriggers.Add($data); 
@@ -169,7 +172,7 @@ $oldTriggers | ConvertTo-JSON -Depth 100 | Out-File -FilePath ( [System.IO.Path]
 $html = ConvertTo-Html -Body $html -Title ($currentHost.HostName);
 Out-File -FilePath  ([System.IO.Path]::Combine( $liveCatalog,"$($currentHost.HostName)_web.html")) -InputObject $html;
 
-if ($newTriggersCount -gt 0 -or $okTriggers -gt 0){
+if ($newTriggersCount -gt 0 -or $okTriggers -gt 0 -or $badTriggers -gt 0){
     $msg.Subject = "PSIX: $($currentHost.Hostname)";
     $msg.Body = $html;
     $msg.IsBodyHtml = $true;
