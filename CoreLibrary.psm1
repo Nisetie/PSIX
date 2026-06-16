@@ -112,7 +112,7 @@ class <className> : TemplateBase {
                 $temp = $triggerBodyTemplate;                
               
                 $someScript = $this.triggers[$key][0].ToString();                
-                $s = ($someScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | select value;
+                $s = ($someScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | Select-Object value;
                 foreach ($el in $s) { 
                     $el = $el.Value; 
                     $someScript = ($someScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $variables[$metricAlias +'_' + $el.Replace("`$this.","")] + "].CurrentValue"));  
@@ -124,7 +124,7 @@ class <className> : TemplateBase {
                 $temp = $temp.Replace('<triggerName>', $metricAlias + '_' + $key);
 
                 $someScript = $this.triggers[$key][1].ToString();                
-                $s = ($someScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | select value;
+                $s = ($someScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | Select-Object value;
                 foreach ($el in $s) {
                     $el = $el.Value;
                     $someScript = ($someScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $variables[$metricAlias +'_' + $el.Replace("`$this.","")] + "].CurrentValue")); 
@@ -258,14 +258,14 @@ class HostBase
         $this.CheckPing();
         $this.CheckHostName();
 
-        if ($this.ping -eq $null) {return;}
+        if ($null -eq $this.ping) {return;}
 
         # подготовка
          $scriptBlock = {
             param([array]$us)
             $ProgressPreference = "SilentlyContinue";        
             $sw = New-Object 'System.Diagnostics.Stopwatch';
-            $us | %{
+            $us | ForEach-Object{
                     $update = $_.Value;
                     $sw.Reset();
                     $sw.Start();
@@ -281,7 +281,7 @@ class HostBase
 
         $sessionOptions = New-PSSessionOption -NoMachineProfile -IdleTimeout 300000;         
         
-        $remoteMetrics = @(,($this.updateScripts.GetEnumerator()|?{$_.Value.IsLocal -eq $false -and $_.Value.RemoteTool -eq [RemoteTool]::PS}|Select-Object *));
+        $remoteMetrics = @(,($this.updateScripts.GetEnumerator()|Where-Object{$_.Value.IsLocal -eq $false -and $_.Value.RemoteTool -eq [RemoteTool]::PS}|Select-Object *));
         if (!($remoteMetrics.Count -eq 1 -and $null -eq $remoteMetrics[0])) {
 
             if ($this.connectionType -eq [ConnectionType]::DNS) {
@@ -294,7 +294,7 @@ class HostBase
             $updateScriptsInvoked = Invoke-Command -Session $session -ScriptBlock $scriptBlock -ArgumentList $remoteMetrics;       
             if ($null -eq $updateScriptsInvoked) { return; }
             if ($updateScriptsInvoked -is [System.Collections.IEnumerable]) {
-                $updateScriptsInvoked | % { $this.ProcessUpdated($_.Key, $_.Value); }
+                $updateScriptsInvoked | ForEach-Object { $this.ProcessUpdated($_.Key, $_.Value); }
             }
             else { $this.ProcessUpdated($updateScriptsInvoked.Key, $updateScriptsInvoked.Value); }
 
@@ -302,7 +302,7 @@ class HostBase
         }
          
         # обработка локальных метрик хоста
-        $this.updateScripts.GetEnumerator()|?{$_.Value.IsLocal -eq $true -and $_.Value.RemoteTool -eq [RemoteTool]::PS}|ForEach-Object{
+        $this.updateScripts.GetEnumerator()|Where-Object{$_.Value.IsLocal -eq $true -and $_.Value.RemoteTool -eq [RemoteTool]::PS}|ForEach-Object{
             $updateScript = $_.Value;
             $sw.Restart();
             try { 
@@ -325,7 +325,7 @@ class HostBase
                 $updateScript = $_.Value;
                 $sw.Restart();
                 if ($_.Value.IsLocal -eq $false) {
-                    $updateScript.CurrentValue = ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=2 $u@$a -o ServerAliveInterval=1 -o ServerAliveCountMax=2 "$($updateScript.Script)" 2>&1;
+                    $updateScript.CurrentValue = ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=2 -T -n $u@$a "$($updateScript.Script)" 2>&1;
                 }
                 else { $updateScript.CurrentValue = & $updateScript.Script 2>&1; }
                 $sw.Stop();
@@ -340,7 +340,7 @@ class HostBase
         $this.templates.GetEnumerator() | ForEach-Object {
             $template = $_.Value;
 
-            $remoteMetrics = @(,($template.updateScripts.GetEnumerator()|?{$_.Value.IsLocal -eq $false -and $_.Value.RemoteTool -eq [RemoteTool]::PS}|Select-Object *));
+            $remoteMetrics = @(,($template.updateScripts.GetEnumerator()|Where-Object{$_.Value.IsLocal -eq $false -and $_.Value.RemoteTool -eq [RemoteTool]::PS}|Select-Object *));
             if (!($remoteMetrics.Count -eq 1 -and $null -eq $remoteMetrics[0])) {
 
                 if ($this.connectionType -eq [ConnectionType]::DNS) {
@@ -352,7 +352,7 @@ class HostBase
                 $updateScriptsInvoked = Invoke-Command -Session $session -ScriptBlock $scriptBlock -ArgumentList $remoteMetrics;       
                 if ($null -eq $updateScriptsInvoked) { return; }
                     if ($updateScriptsInvoked -is [System.Collections.IEnumerable]) { 
-                        $updateScriptsInvoked | % { $template.ProcessUpdated($_.Key, $_.Value); }
+                        $updateScriptsInvoked | ForEach-Object { $template.ProcessUpdated($_.Key, $_.Value); }
                     }
                     else { $template.ProcessUpdated($updateScriptsInvoked.Key, $updateScriptsInvoked.Value); }     
                     
@@ -383,7 +383,7 @@ class HostBase
                     $updateScript = $_.Value;
                     $sw.Restart();
                     if ($_.Value.IsLocal -eq $false) {
-                        $updateScript.CurrentValue = ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=2 $u@$a -o ServerAliveInterval=1 -o ServerAliveCountMax=2 "$($updateScript.Script)" 2>&1;
+                        $updateScript.CurrentValue = ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=2 -T -n $u@$a "$($updateScript.Script)" 2>&1;
                     }
                     else { $updateScript.CurrentValue = & $updateScript.Script 2>&1; }
                     $sw.Stop();
@@ -415,12 +415,12 @@ class HostBase
         $pingTrigger.Template = '';
         $pingTrigger.Item = "ping";
         $pingTrigger.Description = "PING FAIL! $($this.hostName.ToString())";
-        $pingTrigger.Status = ($this.ping -eq $null);
+        $pingTrigger.Status = ($null -eq $this.ping);
         $pingTrigger.CheckTimestamp = [datetime]::Now;
   
         $this.Checked.Add($pingTrigger);
 
-	    if ($this.ping -eq $null) { return; }
+	    if ($null -eq $this.ping) { return; }
 
         if ($this.triggers.Count -gt 0){
             foreach ($i in 0..($this.triggers.Count-1)) {
@@ -509,14 +509,16 @@ function ParseUpdatesCatalog([MetaModel]$info,[string]$className,[string]$path) 
 `$updateScript.TemplateName = `"$className`";
 `$updateScript.ElementName = `"$($updateFileParts[0])`";
 `$updateScript.CurrentValue = `$null;
-`$updateScript.Script = '$($scriptText.Replace("'","''"))';
+`$updateScript.Script = @'
+$($scriptText)
+'@;
 `$updateScript.UpdateTimestamp = [datetime]::MinValue;
 `$updateScript.IsLocal = `$$isLocal;
 `$updateScript.RemoteTool = [RemoteTool]::$updateFileFormat;
 `$this.updateScripts.Add($id,`$updateScript);
 
 "@;
-        $info.variables.Add($updateFile.BaseName, $id);
+        $info.variables.Add($updateFileParts[0], $id);
         ++$id;
     }
     return $initBody;
@@ -530,7 +532,6 @@ function ParseTriggersCatalog([MetaModel]$info,[string]$path) {
         $hostNameStr = '$($this.HostRef.HostName)';
     }
     elseif ($info.objectType -eq [ObjectType]::HOST) {
-        #$hostNameStr = $info.className;
         $hostNameStr = '$($this.HostName)';
     }
     for ($i = 0; $i -ne $triggers.Count; ++$i) {
@@ -551,13 +552,13 @@ function ParseTriggersCatalog([MetaModel]$info,[string]$path) {
             $triggerDescription = GetContent ($triggerCatalog.Fullname + "\message.ps1");
         }
 
-        $s = ($triggerScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | select value;
+        $s = ($triggerScript | Select-String -AllMatches -pattern '\$this.\w*').Matches | Select-Object value;
         foreach ($el in $s) { 
             $el = $el.Value; 
             $triggerScript = ($triggerScript.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $info.variables[$el.Replace("`$this.","")] + "].CurrentValue"));
         }   
 
-        $s = ($triggerDescription | Select-String -AllMatches -pattern '\$this.\w*').Matches | select value;
+        $s = ($triggerDescription | Select-String -AllMatches -pattern '\$this.\w*').Matches | Select-Object value;
         foreach ($el in $s) {
             $el = $el.Value; 
             $triggerDescription = ($triggerDescription.Replace($el,$el.Replace($el,"`$args[0].updateScripts[") + $info.variables[$el.Replace("`$this.","")] + "].CurrentValue"));
@@ -607,9 +608,6 @@ function ParseTemplateCatalog ([string] $path) {
     $initBody = "";
     $updateBody = "";
     $triggerBody = "";
-
-    $defineRows = [System.Collections.Generic.List[object]]::new();
-    $UpdateRows = [System.Collections.Generic.List[object]]::new();    
 
     if ([System.IO.Directory]::Exists($path + "\updates") -eq $true) {        
         $initBody += ParseUpdatesCatalog $templateInfo $className ($path + "\updates")
@@ -680,9 +678,6 @@ class <className> : HostBase {
     $initBody = "";
     $updateBody = "";
     $triggerBody = "";    
-
-    $defineRows = [System.Collections.Generic.List[object]]::new();
-    $UpdateRows = [System.Collections.Generic.List[object]]::new();
 
 	$initBody += '$this.address = "' + $hostAddress +'";' + [Environment]::NewLine;
 	if ($useIP) {
@@ -763,12 +758,6 @@ function ParseLLDCatalog ([string] $path) {
     $files = Get-ChildItem -Path $path -File;
    
     $defineBody = "";
-    $initBody = "";
-    $updateBody = "";
-    $triggerBody = "";
-
-    $defineRows = [System.Collections.Generic.List[object]]::new();
-    $UpdateRows = [System.Collections.Generic.List[object]]::new();
 
     [LLDInfo] $lldInfo = [LLDInfo]::new();
     $lldInfo.className = $className;
